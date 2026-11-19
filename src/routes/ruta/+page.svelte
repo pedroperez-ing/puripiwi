@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { db } from '$lib/firebase';
-  import { collection, getDocs, doc, updateDoc, addDoc, serverTimestamp } from 'firebase/firestore';
+  import { collection, getDocs, getDoc, setDoc, deleteDoc, doc, updateDoc, addDoc, serverTimestamp } from 'firebase/firestore';
 
   interface Client {
     id: string;
@@ -64,6 +64,109 @@
     } finally {
       loading = false;
     }
+  }
+
+  // Clave del lunes de la semana actual en hora local (YYYY-MM-DD)
+  function getWeekMondayKey(date: Date): string {
+    const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const day = d.getDay();
+    const diff = day === 0 ? -6 : 1 - day; // Lunes como inicio de semana
+    d.setDate(d.getDate() + diff);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${dd}`;
+  }
+
+  function getPrevWeekMondayKey(date: Date): string {
+    const d = new Date(date.getFullYear(), date.getMonth(), date.getDate() - 7);
+    return getWeekMondayKey(d);
+  }
+
+  function getMonthKey(date: Date): string {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  function getPrevMonthKey(date: Date): string {
+    const d = new Date(date.getFullYear(), date.getMonth() - 1, 1);
+    return getMonthKey(d);
+  }
+
+  function getYearKey(date: Date): string {
+    return `${date.getFullYear()}`;
+  }
+
+  function getPrevYearKey(date: Date): string {
+    return `${date.getFullYear() - 1}`;
+  }
+
+  // Actualiza el documento único stats/ventas sin acumular registros históricos
+  async function updateSalesCounter(garafonesSold: number) {
+    const now = new Date();
+    const curWeek = getWeekMondayKey(now);
+    const prevWeek = getPrevWeekMondayKey(now);
+    const curMonth = getMonthKey(now);
+    const prevMonth = getPrevMonthKey(now);
+    const curYear = getYearKey(now);
+    const prevYear = getPrevYearKey(now);
+
+    const statsRef = doc(db, 'stats', 'ventas');
+    const snap = await getDoc(statsRef);
+    const data = snap.exists() ? snap.data() : {};
+
+    let semanaActual = Number(data.semanaActual) || 0;
+    let semanaAnterior = Number(data.semanaAnterior) || 0;
+    const savedWeek = data.weekKey || '';
+
+    if (savedWeek === curWeek) {
+      semanaActual += garafonesSold;
+    } else if (savedWeek === prevWeek) {
+      semanaAnterior = semanaActual;
+      semanaActual = garafonesSold;
+    } else {
+      semanaAnterior = 0;
+      semanaActual = garafonesSold;
+    }
+
+    let mesActual = Number(data.mesActual) || 0;
+    let mesAnterior = Number(data.mesAnterior) || 0;
+    const savedMonth = data.monthKey || '';
+
+    if (savedMonth === curMonth) {
+      mesActual += garafonesSold;
+    } else if (savedMonth === prevMonth) {
+      mesAnterior = mesActual;
+      mesActual = garafonesSold;
+    } else {
+      mesAnterior = 0;
+      mesActual = garafonesSold;
+    }
+
+    let anioActual = Number(data.anioActual) || 0;
+    let anioAnterior = Number(data.anioAnterior) || 0;
+    const savedYear = data.yearKey || '';
+
+    if (savedYear === curYear) {
+      anioActual += garafonesSold;
+    } else if (savedYear === prevYear) {
+      anioAnterior = anioActual;
+      anioActual = garafonesSold;
+    } else {
+      anioAnterior = 0;
+      anioActual = garafonesSold;
+    }
+
+    await setDoc(statsRef, {
+      semanaActual,
+      semanaAnterior,
+      weekKey: curWeek,
+      mesActual,
+      mesAnterior,
+      monthKey: curMonth,
+      anioActual,
+      anioAnterior,
+      yearKey: curYear
+    });
   }
 
   async function handleCreateOrder(e: Event) {
@@ -215,7 +318,7 @@
     showDeliverModal = true;
   }
 
-  // Paso 2: Confirmar entrega con control inteligente de buenos, rotos, frecuencia y ventas
+  // Paso 2: Confirmar entrega con control inteligente de buenos, rotos, frecuencia y contador de ventas
   async function confirmDelivery(e: Event) {
     e.preventDefault();
     if (!orderToDeliver) return;
@@ -223,12 +326,13 @@
     try {
       const todayStr = new Date().toISOString().split('T')[0];
 
-      // 1. Marcar pedido como entregado
-      await updateDoc(doc(db, 'orders', orderToDeliver.id), {
-        status: 'entregado'
-      });
+      // 1. Eliminar pedido de orders para no acumular registros entregados
+      await deleteDoc(doc(db, 'orders', orderToDeliver.id));
 
-      // 2. Actualizar cliente, historial, frecuencia, envases prestados y envases rotos
+      // 2. Actualizar contador único de ventas (semana, mes y año)
+      await updateSalesCounter(Number(orderToDeliver.garafones) || 0);
+
+      // 3. Actualizar cliente, historial (últimas 5), frecuencia, envases prestados y envases rotos
       const clientRef = doc(db, 'clients', orderToDeliver.clientId);
       const client = clients.find(c => c.id === orderToDeliver.clientId);
       
@@ -270,15 +374,6 @@
         const diferenciaEnvases = orderToDeliver.garafones - totalDevueltosEfectivos;
         const nuevosPrestados = Math.max(0, currentPrestados + diferenciaEnvases);
         const nuevosRotos = currentRotos + Number(brokenReturned);
-
-        // Registrar venta para contabilidad
-        await addDoc(collection(db, 'sales'), {
-          clientId: client.id,
-          clientName: client.name,
-          garafones: orderToDeliver.garafones,
-          date: todayStr,
-          timestamp: serverTimestamp()
-        });
 
         await updateDoc(clientRef, {
           lastDelivery: todayStr,

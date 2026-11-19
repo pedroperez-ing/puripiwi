@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { db } from '$lib/firebase';
-  import { collection, getDocs, doc, setDoc, getDoc } from 'firebase/firestore';
+  import { doc, setDoc, getDoc } from 'firebase/firestore';
 
   interface Maintenance {
     lastTinacos: string;
@@ -9,9 +9,16 @@
     lastMembrana: string;
   }
 
-  interface Sale {
-    garafones: number;
-    date: string; // 'YYYY-MM-DD'
+  interface SalesCounters {
+    semanaActual: number;
+    semanaAnterior: number;
+    weekKey?: string;
+    mesActual: number;
+    mesAnterior: number;
+    monthKey?: string;
+    anioActual: number;
+    anioAnterior: number;
+    yearKey?: string;
   }
 
   let maint = $state<Maintenance>({
@@ -20,13 +27,54 @@
     lastMembrana: ''
   });
 
-  let sales = $state<Sale[]>([]);
+  let rawSales = $state<SalesCounters>({
+    semanaActual: 0,
+    semanaAnterior: 0,
+    mesActual: 0,
+    mesAnterior: 0,
+    anioActual: 0,
+    anioAnterior: 0
+  });
+
   let loading = $state(true);
   let saving = $state(false);
 
   onMount(async () => {
     await loadData();
   });
+
+  function getWeekMondayKey(date: Date): string {
+    const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const day = d.getDay();
+    const diff = day === 0 ? -6 : 1 - day;
+    d.setDate(d.getDate() + diff);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${dd}`;
+  }
+
+  function getPrevWeekMondayKey(date: Date): string {
+    const d = new Date(date.getFullYear(), date.getMonth(), date.getDate() - 7);
+    return getWeekMondayKey(d);
+  }
+
+  function getMonthKey(date: Date): string {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  function getPrevMonthKey(date: Date): string {
+    const d = new Date(date.getFullYear(), date.getMonth() - 1, 1);
+    return getMonthKey(d);
+  }
+
+  function getYearKey(date: Date): string {
+    return `${date.getFullYear()}`;
+  }
+
+  function getPrevYearKey(date: Date): string {
+    return `${date.getFullYear() - 1}`;
+  }
 
   async function loadData() {
     try {
@@ -37,9 +85,11 @@
         maint = maintDoc.data() as Maintenance;
       }
 
-      // 2. Cargar ventas registradas
-      const salesSnap = await getDocs(collection(db, 'sales'));
-      sales = salesSnap.docs.map(d => d.data()) as Sale[];
+      // 2. Cargar contador único de ventas desde 'stats/ventas'
+      const salesDoc = await getDoc(doc(db, 'stats', 'ventas'));
+      if (salesDoc.exists()) {
+        rawSales = { ...rawSales, ...(salesDoc.data() as SalesCounters) };
+      }
     } catch (error) {
       console.error('Error al cargar datos de mantenimiento y ventas:', error);
     } finally {
@@ -61,45 +111,47 @@
     }
   }
 
-  // Cálculos de Contabilidad de Garrafones (Año, Mes, Semana)
-  let stats = $derived(() => {
+  // Ajuste automático en pantalla si ya cambió la semana, el mes o el año calendario
+  let stats = $derived.by(() => {
     const now = new Date();
-    const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth(); // 0-11
-    
-    // Obtener número de semana actual aproximado o filtrar por fechas
-    let yearTotal = 0;
-    let monthTotal = 0;
+    const curWeek = getWeekMondayKey(now);
+    const prevWeek = getPrevWeekMondayKey(now);
+    const curMonth = getMonthKey(now);
+    const prevMonth = getPrevMonthKey(now);
+    const curYear = getYearKey(now);
+    const prevYear = getPrevYearKey(now);
+
     let weekTotal = 0;
+    let weekPrev = 0;
+    if (rawSales.weekKey === curWeek) {
+      weekTotal = Number(rawSales.semanaActual) || 0;
+      weekPrev = Number(rawSales.semanaAnterior) || 0;
+    } else if (rawSales.weekKey === prevWeek) {
+      weekTotal = 0;
+      weekPrev = Number(rawSales.semanaActual) || 0;
+    }
 
-    // Inicio de semana (considerando lunes)
-    const firstDayOfWeek = new Date(now);
-    const day = now.getDay() || 7;
-    if (day !== 1) firstDayOfWeek.setHours(-24 * (day - 1));
-    firstDayOfWeek.setHours(0,0,0,0);
+    let monthTotal = 0;
+    let monthPrev = 0;
+    if (rawSales.monthKey === curMonth) {
+      monthTotal = Number(rawSales.mesActual) || 0;
+      monthPrev = Number(rawSales.mesAnterior) || 0;
+    } else if (rawSales.monthKey === prevMonth) {
+      monthTotal = 0;
+      monthPrev = Number(rawSales.mesActual) || 0;
+    }
 
-    sales.forEach(sale => {
-      if (!sale.date) return;
-      const saleDate = new Date(sale.date + 'T00:00:00');
-      const qty = Number(sale.garafones) || 0;
+    let yearTotal = 0;
+    let yearPrev = 0;
+    if (rawSales.yearKey === curYear) {
+      yearTotal = Number(rawSales.anioActual) || 0;
+      yearPrev = Number(rawSales.anioAnterior) || 0;
+    } else if (rawSales.yearKey === prevYear) {
+      yearTotal = 0;
+      yearPrev = Number(rawSales.anioActual) || 0;
+    }
 
-      // Por Año
-      if (saleDate.getFullYear() === currentYear) {
-        yearTotal += qty;
-
-        // Por Mes
-        if (saleDate.getMonth() === currentMonth) {
-          monthTotal += qty;
-        }
-
-        // Por Semana
-        if (saleDate >= firstDayOfWeek) {
-          weekTotal += qty;
-        }
-      }
-    });
-
-    return { yearTotal, monthTotal, weekTotal };
+    return { weekTotal, weekPrev, monthTotal, monthPrev, yearTotal, yearPrev };
   });
 </script>
 
@@ -120,20 +172,29 @@
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div class="bg-slate-800/80 border border-slate-700 p-4 rounded-xl text-center space-y-1 shadow-md">
           <span class="text-xs text-slate-400 uppercase font-semibold">Semana Actual</span>
-          <div class="text-3xl font-black text-cyan-400">{stats().weekTotal}</div>
-          <span class="text-[11px] text-slate-500">Garrafones entregados</span>
+          <div class="text-3xl font-black text-cyan-400">{stats.weekTotal}</div>
+          <span class="text-[11px] text-slate-500 block">Garrafones entregados</span>
+          <div class="pt-1 border-t border-slate-700/70 text-[11px] text-slate-400">
+            Semana anterior: <strong class="text-slate-200">{stats.weekPrev}</strong>
+          </div>
         </div>
 
         <div class="bg-slate-800/80 border border-slate-700 p-4 rounded-xl text-center space-y-1 shadow-md">
           <span class="text-xs text-slate-400 uppercase font-semibold">Mes Actual</span>
-          <div class="text-3xl font-black text-cyan-300">{stats().monthTotal}</div>
-          <span class="text-[11px] text-slate-500">Garrafones entregados</span>
+          <div class="text-3xl font-black text-cyan-300">{stats.monthTotal}</div>
+          <span class="text-[11px] text-slate-500 block">Garrafones entregados</span>
+          <div class="pt-1 border-t border-slate-700/70 text-[11px] text-slate-400">
+            Mes anterior: <strong class="text-slate-200">{stats.monthPrev}</strong>
+          </div>
         </div>
 
         <div class="bg-slate-800/80 border border-slate-700 p-4 rounded-xl text-center space-y-1 shadow-md">
           <span class="text-xs text-slate-400 uppercase font-semibold">Año Actual</span>
-          <div class="text-3xl font-black text-emerald-400">{stats().yearTotal}</div>
-          <span class="text-[11px] text-slate-500">Garrafones entregados</span>
+          <div class="text-3xl font-black text-emerald-400">{stats.yearTotal}</div>
+          <span class="text-[11px] text-slate-500 block">Garrafones entregados</span>
+          <div class="pt-1 border-t border-slate-700/70 text-[11px] text-slate-400">
+            Año anterior: <strong class="text-slate-200">{stats.yearPrev}</strong>
+          </div>
         </div>
       </div>
     </div>
