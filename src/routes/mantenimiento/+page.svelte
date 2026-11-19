@@ -173,7 +173,7 @@
         <div class="bg-slate-800/80 border border-slate-700 p-4 rounded-xl text-center space-y-1 shadow-md">
           <span class="text-xs text-slate-400 uppercase font-semibold">Semana Actual</span>
           <div class="text-3xl font-black text-cyan-400">{stats.weekTotal}</div>
-          <span class="text-[11px] text-slate-500 block">Garrafones entregados</span>
+          <span class="text-[11px] text-slate-500 block">Garrafones Vendidos</span>
           <div class="pt-1 border-t border-slate-700/70 text-[11px] text-slate-400">
             Semana anterior: <strong class="text-slate-200">{stats.weekPrev}</strong>
           </div>
@@ -182,7 +182,7 @@
         <div class="bg-slate-800/80 border border-slate-700 p-4 rounded-xl text-center space-y-1 shadow-md">
           <span class="text-xs text-slate-400 uppercase font-semibold">Mes Actual</span>
           <div class="text-3xl font-black text-cyan-300">{stats.monthTotal}</div>
-          <span class="text-[11px] text-slate-500 block">Garrafones entregados</span>
+          <span class="text-[11px] text-slate-500 block">Garrafones Vendidos</span>
           <div class="pt-1 border-t border-slate-700/70 text-[11px] text-slate-400">
             Mes anterior: <strong class="text-slate-200">{stats.monthPrev}</strong>
           </div>
@@ -191,7 +191,7 @@
         <div class="bg-slate-800/80 border border-slate-700 p-4 rounded-xl text-center space-y-1 shadow-md">
           <span class="text-xs text-slate-400 uppercase font-semibold">Año Actual</span>
           <div class="text-3xl font-black text-emerald-400">{stats.yearTotal}</div>
-          <span class="text-[11px] text-slate-500 block">Garrafones entregados</span>
+          <span class="text-[11px] text-slate-500 block">Garrafones Vendidos</span>
           <div class="pt-1 border-t border-slate-700/70 text-[11px] text-slate-400">
             Año anterior: <strong class="text-slate-200">{stats.yearPrev}</strong>
           </div>
