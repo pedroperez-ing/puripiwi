@@ -157,7 +157,7 @@
 
 <div class="space-y-6">
   <!-- Cabecera -->
-  <div class="bg-slate-800/60 p-4 rounded-xl border border-slate-700">
+  <div class="bg-slate-800/60 p-4 rounded-xl border border-slate-700 text-center sm:text-left">
     <h2 class="text-xl font-bold text-cyan-300">⚙️ Mantenimiento de Equipos & Contabilidad</h2>
     <p class="text-xs text-slate-400">Supervisa el estado de tus sistemas de purificación y el balance de ventas de garrafones.</p>
   </div>
@@ -167,10 +167,10 @@
   {:else}
     <!-- SECCIÓN 1: CONTABILIDAD DE VENTAS -->
     <div class="space-y-3">
-      <h3 class="font-bold text-slate-200 text-sm">📊 Balance de Garrafones Vendidos</h3>
+      <h3 class="font-bold text-slate-200 text-sm text-center sm:text-left">📊 Balance de Garrafones Vendidos</h3>
       
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div class="bg-slate-800/80 border border-slate-700 p-4 rounded-xl text-center space-y-1 shadow-md">
+        <div class="bg-slate-800/80 border border-slate-700 p-4 rounded-xl text-center space-y-1 shadow-md min-w-0">
           <span class="text-xs text-slate-400 uppercase font-semibold">Semana Actual</span>
           <div class="text-3xl font-black text-cyan-400">{stats.weekTotal}</div>
           <span class="text-[11px] text-slate-500 block">Garrafones Vendidos</span>
@@ -179,7 +179,7 @@
           </div>
         </div>
 
-        <div class="bg-slate-800/80 border border-slate-700 p-4 rounded-xl text-center space-y-1 shadow-md">
+        <div class="bg-slate-800/80 border border-slate-700 p-4 rounded-xl text-center space-y-1 shadow-md min-w-0">
           <span class="text-xs text-slate-400 uppercase font-semibold">Mes Actual</span>
           <div class="text-3xl font-black text-cyan-300">{stats.monthTotal}</div>
           <span class="text-[11px] text-slate-500 block">Garrafones Vendidos</span>
@@ -188,7 +188,7 @@
           </div>
         </div>
 
-        <div class="bg-slate-800/80 border border-slate-700 p-4 rounded-xl text-center space-y-1 shadow-md">
+        <div class="bg-slate-800/80 border border-slate-700 p-4 rounded-xl text-center space-y-1 shadow-md min-w-0">
           <span class="text-xs text-slate-400 uppercase font-semibold">Año Actual</span>
           <div class="text-3xl font-black text-emerald-400">{stats.yearTotal}</div>
           <span class="text-[11px] text-slate-500 block">Garrafones Vendidos</span>
@@ -200,35 +200,35 @@
     </div>
 
     <!-- SECCIÓN 2: MANTENIMIENTO DE EQUIPOS -->
-    <div class="bg-slate-800/60 border border-slate-700 rounded-xl p-5 space-y-4">
-      <div>
+    <div class="bg-slate-800/60 border border-slate-700 rounded-xl p-5 space-y-4 min-w-0 overflow-hidden">
+      <div class="text-center sm:text-left">
         <h3 class="font-bold text-cyan-300 text-base">🛠️ Mantenimiento de Sistemas de Purificación</h3>
         <p class="text-xs text-slate-400">Actualiza las fechas de servicio. El registro aplica de forma general para tus equipos.</p>
       </div>
 
-      <form onsubmit={saveMaintenance} class="space-y-4 text-sm">
-        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <div class="bg-slate-900/80 p-3 rounded-lg border border-slate-700 space-y-2">
+      <form onsubmit={saveMaintenance} class="space-y-4 text-sm min-w-0">
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 min-w-0">
+          <div class="bg-slate-900/80 p-3 rounded-lg border border-slate-700 space-y-2 min-w-0 overflow-hidden">
             <label class="block text-xs font-bold text-slate-300">🚿 Último Lavado de Tinacos</label>
-            <input type="date" bind:value={maint.lastTinacos} class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-slate-100 text-xs focus:border-cyan-400 focus:outline-none" />
+            <input type="date" bind:value={maint.lastTinacos} class="w-full min-w-0 max-w-full box-border bg-slate-950 border border-slate-700 rounded-lg p-2 text-slate-100 text-xs focus:border-cyan-400 focus:outline-none" />
           </div>
 
-          <div class="bg-slate-900/80 p-3 rounded-lg border border-slate-700 space-y-2">
+          <div class="bg-slate-900/80 p-3 rounded-lg border border-slate-700 space-y-2 min-w-0 overflow-hidden">
             <label class="block text-xs font-bold text-slate-300">🔄 Último Cambio de Filtros</label>
-            <input type="date" bind:value={maint.lastFiltros} class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-slate-100 text-xs focus:border-cyan-400 focus:outline-none" />
+            <input type="date" bind:value={maint.lastFiltros} class="w-full min-w-0 max-w-full box-border bg-slate-950 border border-slate-700 rounded-lg p-2 text-slate-100 text-xs focus:border-cyan-400 focus:outline-none" />
           </div>
 
-          <div class="bg-slate-900/80 p-3 rounded-lg border border-slate-700 space-y-2">
+          <div class="bg-slate-900/80 p-3 rounded-lg border border-slate-700 space-y-2 min-w-0 overflow-hidden">
             <label class="block text-xs font-bold text-slate-300">💧 Membrana Ósmosis Inversa</label>
-            <input type="date" bind:value={maint.lastMembrana} class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-slate-100 text-xs focus:border-cyan-400 focus:outline-none" />
+            <input type="date" bind:value={maint.lastMembrana} class="w-full min-w-0 max-w-full box-border bg-slate-950 border border-slate-700 rounded-lg p-2 text-slate-100 text-xs focus:border-cyan-400 focus:outline-none" />
           </div>
         </div>
 
-        <div class="flex justify-end pt-2">
+        <div class="flex justify-center sm:justify-end pt-2">
           <button 
             type="submit" 
             disabled={saving}
-            class="bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold px-6 py-2.5 rounded-xl transition-colors shadow-lg text-sm cursor-pointer disabled:opacity-50"
+            class="w-full sm:w-auto bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold px-6 py-2.5 rounded-xl transition-colors shadow-lg text-sm cursor-pointer disabled:opacity-50"
           >
             {saving ? 'Guardando...' : '💾 Guardar Fechas de Mantenimiento'}
           </button>

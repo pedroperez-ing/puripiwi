@@ -446,14 +446,14 @@
 
 <div class="space-y-6">
   <!-- Cabecera de la Ruta -->
-  <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-slate-800/60 p-4 rounded-xl border border-slate-700">
+  <div class="flex flex-col sm:flex-row justify-between items-center text-center sm:text-left gap-4 bg-slate-800/60 p-4 rounded-xl border border-slate-700">
     <div>
       <h2 class="text-xl font-bold text-cyan-300">🚚 Ruta de Entregas del Día</h2>
       <p class="text-xs text-slate-400">Tus pendientes en la calle. Al confirmar la entrega, registra envases buenos, rotos y frecuencia.</p>
     </div>
     <button 
       onclick={() => showNewOrderModal = true}
-      class="bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold px-4 py-2 rounded-lg text-sm transition-colors shadow-lg flex items-center gap-2 cursor-pointer"
+      class="w-full sm:w-auto bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold px-4 py-2.5 rounded-lg text-sm transition-colors shadow-lg flex items-center justify-center gap-2 cursor-pointer"
     >
       ➕ Agregar Pedido Rápido
     </button>

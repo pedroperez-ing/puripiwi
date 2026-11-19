@@ -160,14 +160,14 @@
 
 <div class="space-y-6">
   <!-- Cabecera del Módulo -->
-  <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-slate-800/60 p-4 rounded-xl border border-slate-700">
+  <div class="flex flex-col sm:flex-row justify-between items-center text-center sm:text-left gap-4 bg-slate-800/60 p-4 rounded-xl border border-slate-700">
     <div>
       <h2 class="text-xl font-bold text-cyan-300">Control de Clientes & Mostrador</h2>
       <p class="text-xs text-slate-400">Gestión de perfiles, envases y alertas de frecuencia de compra.</p>
     </div>
     <button 
       onclick={() => showModal = true}
-      class="bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold px-4 py-2 rounded-lg text-sm transition-colors shadow-lg flex items-center gap-2 cursor-pointer"
+      class="w-full sm:w-auto bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold px-4 py-2.5 rounded-lg text-sm transition-colors shadow-lg flex items-center justify-center gap-2 cursor-pointer"
     >
       ➕ Nuevo Cliente
     </button>
@@ -333,7 +333,7 @@
               <input type="number" min="0" bind:value={newClient.prestados} class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
             </div>
             <div>
-              <label class="block text-xs text-slate-400 math mb-1">Envases Rotos</label>
+              <label class="block text-xs text-slate-400 mb-1">Envases Rotos</label>
               <input type="number" min="0" bind:value={newClient.rotos} class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
             </div>
           </div>
