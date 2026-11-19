@@ -1,6 +1,5 @@
 <script lang="ts">
   import './layout.css';
-  import favicon from '$lib/assets/favicon.svg';
   import type { LayoutProps } from './$types';
 
   let { children }: LayoutProps = $props();
@@ -18,20 +17,28 @@
 </script>
 
 <svelte:head>
-  <link rel="icon" href={favicon} />
+  <link rel="icon" href="/logo.png" />
+  <title>PURIPIWI</title>
 </svelte:head>
 
 <div class="min-h-screen bg-slate-900 text-slate-100 dark:bg-slate-900 dark:text-slate-100 transition-colors duration-200 flex flex-col justify-between">
   <!-- Contenido principal -->
   <main class="max-w-4xl mx-auto w-full p-4 flex-grow space-y-4">
-    <header class="border-b border-slate-700 pb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-      <div>
-        <h1 class="text-2xl font-black text-cyan-400 tracking-wider">PURIPIWI</h1>
-        <p class="text-xs text-slate-400">Sistema de Control y Reparto de Purificadora</p>
+    <header class="border-b border-slate-700 pb-4 flex flex-col sm:flex-row justify-between items-center gap-3">
+      <div class="flex items-center gap-3">
+        <img
+          src="/logo.png"
+          alt="Logo Puripiwi"
+          class="w-12 h-12 rounded-full object-cover bg-white border-2 border-cyan-400/70 shadow-md shrink-0"
+        />
+        <div>
+          <h1 class="text-2xl font-black text-cyan-400 tracking-wider">PURIPIWI</h1>
+          <p class="text-xs text-slate-400">Sistema de Control y Reparto de Purificadora</p>
+        </div>
       </div>
       
       <!-- Navegación Rápida por Pestañas -->
-      <nav class="flex gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs">
+      <nav class="flex flex-wrap justify-center sm:justify-start w-full sm:w-auto gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs">
         <a href="/" class="px-3 py-1.5 rounded-lg font-medium transition-colors hover:bg-slate-800 text-slate-300">👥 Mostrador</a>
         <a href="/ruta" class="px-3 py-1.5 rounded-lg font-medium transition-colors hover:bg-slate-800 text-slate-300">🚚 Ruta de Hoy</a>
         <a href="/mantenimiento" class="px-3 py-1.5 rounded-lg font-medium transition-colors hover:bg-slate-800 text-slate-300">⚙️ Equipos & Ventas</a>

@@ -9,6 +9,8 @@
     phone: string;
     address: string;
     mapLink: string;
+    lat?: number | null;
+    lng?: number | null;
     defaultGarafones: number;
     prestados: number;
     rotos: number;
@@ -25,12 +27,34 @@
     phone: '',
     address: '',
     mapLink: '',
+    coordsText: '',
     defaultGarafones: 2,
     prestados: 0,
     rotos: 0,
     frecuenciaDias: 4,
     lastDelivery: ''
   });
+
+  function extractCoords(input: string): { lat: number; lng: number } | null {
+    if (!input) return null;
+    // Busca patrones como @19.5081,-99.0142 o 19.5081, -99.0142 o !3d19.5081!4d-99.0142
+    const d3d4Match = input.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
+    if (d3d4Match) {
+      return { lat: parseFloat(d3d4Match[1]), lng: parseFloat(d3d4Match[2]) };
+    }
+    const pairMatch = input.match(/(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)/);
+    if (pairMatch) {
+      return { lat: parseFloat(pairMatch[1]), lng: parseFloat(pairMatch[2]) };
+    }
+    return null;
+  }
+
+  function handleMapLinkInput() {
+    const parsed = extractCoords(newClient.mapLink);
+    if (parsed) {
+      newClient.coordsText = `${parsed.lat}, ${parsed.lng}`;
+    }
+  }
 
   onMount(async () => {
     await fetchClients();
@@ -54,8 +78,13 @@
   async function handleAddClient(e: Event) {
     e.preventDefault();
     try {
+      const parsedCoords = extractCoords(newClient.coordsText) || extractCoords(newClient.mapLink);
+      const { coordsText, ...clientData } = newClient;
+
       await addDoc(collection(db, 'clients'), {
-        ...newClient,
+        ...clientData,
+        lat: parsedCoords ? parsedCoords.lat : null,
+        lng: parsedCoords ? parsedCoords.lng : null,
         createdAt: serverTimestamp()
       });
       newClient = {
@@ -63,6 +92,7 @@
         phone: '',
         address: '',
         mapLink: '',
+        coordsText: '',
         defaultGarafones: 2,
         prestados: 0,
         rotos: 0,
@@ -110,10 +140,19 @@
     return diffDays >= client.frecuenciaDias;
   }
 
-  function getWhatsAppLink(client: Client): string {
+  function openWhatsApp(client: Client) {
     const cleanPhone = client.phone.replace(/\D/g, '');
-    const message = encodeURIComponent(`¡Hola ${client.name}! Buen día, notamos que probablemente ya se te esté acabando el agua de tu garrafón. ¿Te mandamos tus ${client.defaultGarafones} de siempre hoy?`);
-    return `https://api.whatsapp.com/send?phone=52${cleanPhone}&text=${message}`;
+    const hour = new Date().getHours();
+    let saludo = 'buenas noches';
+    if (hour >= 5 && hour < 12) {
+      saludo = 'buenos días';
+    } else if (hour >= 12 && hour < 19) {
+      saludo = 'buenas tardes';
+    }
+
+    const rawText = `Hola, ${saludo} ☺️. Solo quería preguntarle si va a necesitar agua el día de hoy? 💧`;
+    const message = encodeURIComponent(rawText);
+    window.open(`https://api.whatsapp.com/send?phone=52${cleanPhone}&text=${message}`, '_blank', 'noopener,noreferrer');
   }
 
   let suggestedClients = $derived(clients.filter(c => needsWaterToday(c)));
@@ -158,14 +197,13 @@
               <p class="text-[11px] text-slate-400">Última entrega: {client.lastDelivery || 'Ninguna'} ({client.defaultGarafones} garrafones)</p>
             </div>
             {#if client.phone}
-              <a 
-                href={getWhatsAppLink(client)} 
-                target="_blank" 
-                rel="noopener noreferrer"
-                class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3 py-2 rounded-lg transition-colors flex items-center gap-1.5 shadow"
+              <button 
+                type="button"
+                onclick={() => openWhatsApp(client)}
+                class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3 py-2 rounded-lg transition-colors flex items-center gap-1.5 shadow cursor-pointer"
               >
                 💬 WhatsApp 1 Clic
-              </a>
+              </button>
             {:else}
               <span class="text-[10px] text-slate-500 italic">Sin teléfono</span>
             {/if}
@@ -277,7 +315,12 @@
 
           <div>
             <label class="block text-xs text-slate-400 mb-1">Link de Google Maps</label>
-            <input type="url" bind:value={newClient.mapLink} placeholder="https://maps.app.goo.gl/..." class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
+            <input type="url" bind:value={newClient.mapLink} oninput={handleMapLinkInput} placeholder="https://maps.app.goo.gl/..." class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
+          </div>
+
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">Coordenadas (lat, lng) <span class="text-slate-500">— se llenan solas con link largo o pégalas si el link es corto</span></label>
+            <input type="text" bind:value={newClient.coordsText} placeholder="Ej. 19.508123, -99.014256" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
           </div>
 
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">

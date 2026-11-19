@@ -9,7 +9,10 @@
     phone: string;
     address: string;
     mapLink: string;
+    lat?: number | null;
+    lng?: number | null;
     defaultGarafones: number;
+    garrafonesHistory?: number[];
     prestados: number;
     rotos: number;
     frecuenciaDias: number;
@@ -21,12 +24,15 @@
     id: string;
     clientId: string;
     clientName: string;
+    clientPhone?: string;
     address: string;
     mapLink: string;
     garafones: number;
     status: 'pendiente' | 'entregado';
     createdAt: any;
   }
+
+  const BASE_COORDS = { lat: 19.506519, lng: -99.015168 };
 
   let orders = $state<Order[]>([]);
   let clients = $state<Client[]>([]);
@@ -71,6 +77,7 @@
       await addDoc(collection(db, 'orders'), {
         clientId: client.id,
         clientName: client.name,
+        clientPhone: client.phone || '',
         address: client.address || 'Sin dirección',
         mapLink: client.mapLink || '',
         garafones: Number(customGarafones),
@@ -86,6 +93,118 @@
       console.error('Error al crear pedido:', error);
       alert('Error al registrar el pedido.');
     }
+  }
+
+  // Obtener teléfono del pedido o del perfil del cliente
+  function getOrderPhone(order: Order): string {
+    if (order.clientPhone) return order.clientPhone;
+    const found = clients.find(c => c.id === order.clientId);
+    return found?.phone || '';
+  }
+
+  function getClientCoords(order: Order): { lat: number; lng: number } | null {
+    const found = clients.find(c => c.id === order.clientId);
+    if (found && typeof found.lat === 'number' && typeof found.lng === 'number') {
+      return { lat: found.lat, lng: found.lng };
+    }
+    return null;
+  }
+
+  // Distancia Manhattan en kilómetros (suma de catetos N-S + E-O)
+  function manhattanKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+    const cosLat = Math.cos(((a.lat + b.lat) / 2) * (Math.PI / 180));
+    const dLatKm = Math.abs(a.lat - b.lat) * 111.32;
+    const dLngKm = Math.abs(a.lng - b.lng) * 111.32 * cosLat;
+    return dLatKm + dLngKm;
+  }
+
+  function calcClosedLoopKm(stops: { order: Order; coords: { lat: number; lng: number } }[]): number {
+    if (stops.length === 0) return 0;
+    let total = manhattanKm(BASE_COORDS, stops[0].coords);
+    for (let i = 0; i < stops.length - 1; i++) {
+      total += manhattanKm(stops[i].coords, stops[i + 1].coords);
+    }
+    total += manhattanKm(stops[stops.length - 1].coords, BASE_COORDS);
+    return total;
+  }
+
+  function getOptimalRouteOrders(list: Order[]): Order[] {
+    const withCoords: { order: Order; coords: { lat: number; lng: number } }[] = [];
+    const withoutCoords: Order[] = [];
+
+    for (const o of list) {
+      const c = getClientCoords(o);
+      if (c) {
+        withCoords.push({ order: o, coords: c });
+      } else {
+        withoutCoords.push(o);
+      }
+    }
+
+    // 1. Construcción inicial por Vecino Más Cercano (Manhattan)
+    let route: { order: Order; coords: { lat: number; lng: number } }[] = [];
+    let currentPos = BASE_COORDS;
+    const remaining = [...withCoords];
+
+    while (remaining.length > 0) {
+      let bestIdx = 0;
+      let bestDist = manhattanKm(currentPos, remaining[0].coords);
+
+      for (let i = 1; i < remaining.length; i++) {
+        const d = manhattanKm(currentPos, remaining[i].coords);
+        if (d < bestDist) {
+          bestDist = d;
+          bestIdx = i;
+        }
+      }
+
+      const [picked] = remaining.splice(bestIdx, 1);
+      route.push(picked);
+      currentPos = picked.coords;
+    }
+
+    // 2. Mejora 2-opt sobre el circuito cerrado (incluyendo regreso a BASE_COORDS)
+    if (route.length >= 3) {
+      let improved = true;
+      let bestKm = calcClosedLoopKm(route);
+
+      while (improved) {
+        improved = false;
+        for (let i = 0; i < route.length - 1; i++) {
+          for (let j = i + 1; j < route.length; j++) {
+            const candidate = [
+              ...route.slice(0, i),
+              ...route.slice(i, j + 1).reverse(),
+              ...route.slice(j + 1)
+            ];
+            const candidateKm = calcClosedLoopKm(candidate);
+            if (candidateKm + 0.001 < bestKm) {
+              route = candidate;
+              bestKm = candidateKm;
+              improved = true;
+            }
+          }
+        }
+      }
+    }
+
+    return [...route.map(r => r.order), ...withoutCoords];
+  }
+
+  function openOptimalRoute() {
+    const routeStops = orderedPendingOrders
+      .map(o => ({ order: o, coords: getClientCoords(o) }))
+      .filter((item): item is { order: Order; coords: { lat: number; lng: number } } => item.coords !== null)
+      .slice(0, 9);
+
+    if (routeStops.length === 0) return;
+
+    const baseStr = `${BASE_COORDS.lat},${BASE_COORDS.lng}`;
+    const waypointsStr = routeStops.map(s => `${s.coords.lat},${s.coords.lng}`).join('|');
+
+    const url = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(baseStr)}&destination=${encodeURIComponent(baseStr)}&waypoints=${encodeURIComponent(waypointsStr)}&travelmode=driving`;
+
+    window.open(url, '_blank', 'noopener,noreferrer');
   }
 
   // Paso 1: Abrir modal de Doble Check sugiriendo los envases
@@ -132,6 +251,13 @@
           if (avgDays > 0) newFrecuencia = avgDays;
         }
 
+        // Recálculo automático de garrafones habituales por promedio (últimas 5 visitas)
+        let currentGarafonesHistory = client.garrafonesHistory || [];
+        currentGarafonesHistory = [Number(orderToDeliver.garafones), ...currentGarafonesHistory].slice(0, 5);
+        const totalGarafonesSum = currentGarafonesHistory.reduce((acc, qty) => acc + qty, 0);
+        const avgGarafones = Math.round(totalGarafonesSum / currentGarafonesHistory.length);
+        const newDefaultGarafones = avgGarafones > 0 ? avgGarafones : (client.defaultGarafones || 2);
+
         // Control de Envases: 
         // Entregados llenos: orderToDeliver.garafones
         // Buenos devueltos: Number(emptyReturned)
@@ -158,6 +284,8 @@
           lastDelivery: todayStr,
           history: currentHistory,
           frecuenciaDias: newFrecuencia,
+          defaultGarafones: newDefaultGarafones,
+          garrafonesHistory: currentGarafonesHistory,
           prestados: nuevosPrestados,
           rotos: nuevosRotos // Acumula el garrafón roto detectado en la entrega
         });
@@ -173,6 +301,52 @@
   }
 
   let pendingOrders = $derived(orders.filter(o => o.status === 'pendiente'));
+  let orderedPendingOrders = $derived(getOptimalRouteOrders(pendingOrders));
+  let stopsWithCoordsCount = $derived(
+    orderedPendingOrders.filter(o => getClientCoords(o) !== null).length
+  );
+
+  let routeStats = $derived.by(() => {
+    const stops = orderedPendingOrders
+      .map(o => ({ order: o, coords: getClientCoords(o) }))
+      .filter((item): item is { order: Order; coords: { lat: number; lng: number } } => item.coords !== null);
+
+    if (stops.length === 0) {
+      return { km: 0, minutes: 0 };
+    }
+
+    const km = calcClosedLoopKm(stops);
+    // Velocidad urbana estimada ~22 km/h + 3 min por parada de entrega
+    const drivingMinutes = (km / 22) * 60;
+    const stopMinutes = stops.length * 3;
+    const minutes = Math.max(1, Math.round(drivingMinutes + stopMinutes));
+
+    return {
+      km: Number(km.toFixed(1)),
+      minutes
+    };
+  });
+
+  let loadSummary = $derived.by(() => {
+    let total = 0;
+    let bonitos = 0;
+    let feos = 0;
+
+    for (const order of orderedPendingOrders) {
+      const qty = Number(order.garafones) || 0;
+      const client = clients.find(c => c.id === order.clientId);
+      const isFeo = (client?.rotos || 0) > 2;
+
+      total += qty;
+      if (isFeo) {
+        feos += qty;
+      } else {
+        bonitos += qty;
+      }
+    }
+
+    return { total, bonitos, feos };
+  });
 </script>
 
 <div class="space-y-6">
@@ -190,10 +364,45 @@
     </button>
   </div>
 
+  <!-- Barra Centrada Arriba de los Pedidos: Ruta Óptima, Resumen y Carga del Carro -->
+  {#if !loading && orderedPendingOrders.length > 0}
+    <div class="bg-slate-800/80 border border-emerald-500/30 rounded-xl p-4 flex flex-col items-center justify-center gap-3 shadow-lg text-center">
+      {#if stopsWithCoordsCount > 0}
+        <button
+          type="button"
+          onclick={openOptimalRoute}
+          class="bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 font-black px-6 py-2.5 rounded-xl text-sm transition-all shadow-lg shadow-emerald-950/60 flex items-center justify-center gap-2 cursor-pointer"
+        >
+          🌿🗺️ Ruta Óptima + Regreso ({Math.min(stopsWithCoordsCount, 9)})
+        </button>
+      {/if}
+
+      <div class="flex flex-wrap items-center justify-center gap-2 text-xs">
+        <span class="bg-slate-900 border border-slate-700 px-3 py-1.5 rounded-lg text-slate-200 font-bold">
+          🛒 Subir al carro: <strong class="text-cyan-300 text-sm">{loadSummary.total}</strong> garrafones
+        </span>
+        <span class="bg-emerald-950/70 border border-emerald-700/60 px-3 py-1.5 rounded-lg text-emerald-300 font-semibold">
+          ✨ Bonitos: <strong>{loadSummary.bonitos}</strong>
+        </span>
+        <span class="bg-amber-950/70 border border-amber-700/60 px-3 py-1.5 rounded-lg text-amber-300 font-semibold">
+          ⚠️ Feos: <strong>{loadSummary.feos}</strong>
+        </span>
+        {#if stopsWithCoordsCount > 0}
+          <span class="bg-slate-900 border border-emerald-800/60 px-3 py-1.5 rounded-lg text-emerald-300 font-semibold">
+            📏 ~{routeStats.km} km (ida y vuelta)
+          </span>
+          <span class="bg-slate-900 border border-cyan-800/60 px-3 py-1.5 rounded-lg text-cyan-300 font-semibold">
+            ⏱️ ~{routeStats.minutes} min est.
+          </span>
+        {/if}
+      </div>
+    </div>
+  {/if}
+
   <!-- Lista de Tareas de Reparto -->
   {#if loading}
     <div class="text-center py-12 text-slate-400 animate-pulse">Cargando ruta de entrega...</div>
-  {:else if pendingOrders.length === 0}
+  {:else if orderedPendingOrders.length === 0}
     <div class="text-center py-16 bg-slate-800/30 rounded-2xl border border-slate-800 space-y-2">
       <div class="text-4xl">🎉</div>
       <p class="text-slate-200 font-bold text-base">¡No hay pedidos pendientes en la ruta!</p>
@@ -201,7 +410,8 @@
     </div>
   {:else}
     <div class="grid grid-cols-1 gap-4">
-      {#each pendingOrders as order}
+      {#each orderedPendingOrders as order}
+        {@const phone = getOrderPhone(order)}
         <div class="bg-slate-800/90 border-2 border-cyan-500/40 rounded-xl p-4 sm:p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 shadow-xl">
           <div class="space-y-1.5 flex-grow">
             <div class="flex items-center gap-3">
@@ -215,18 +425,27 @@
               📍 <strong class="text-slate-400">Dirección:</strong> {order.address}
             </p>
 
-            {#if order.mapLink}
-              <div>
+            <div class="flex flex-wrap items-center gap-2 mt-1">
+              {#if phone}
+                <a 
+                  href="tel:{phone.replace(/\s+/g, '')}" 
+                  class="inline-flex items-center gap-1.5 text-xs bg-slate-900 hover:bg-slate-950 text-emerald-400 px-3 py-1.5 rounded-lg border border-slate-700 font-medium transition-colors"
+                >
+                  📞 Llamar: {phone}
+                </a>
+              {/if}
+
+              {#if order.mapLink}
                 <a 
                   href={order.mapLink} 
                   target="_blank" 
                   rel="noopener noreferrer" 
-                  class="inline-flex items-center gap-1.5 text-xs bg-slate-900 hover:bg-slate-950 text-cyan-400 px-3 py-1.5 rounded-lg border border-slate-700 font-medium transition-colors mt-1"
+                  class="inline-flex items-center gap-1.5 text-xs bg-slate-900 hover:bg-slate-950 text-cyan-400 px-3 py-1.5 rounded-lg border border-slate-700 font-medium transition-colors"
                 >
                   🗺️ Abrir ruta exacta en Google Maps
                 </a>
-              </div>
-            {/if}
+              {/if}
+            </div>
           </div>
 
           <!-- Botón de acción principal con Doble Check -->
