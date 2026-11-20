@@ -82,7 +82,12 @@
       // 1. Cargar datos de mantenimiento desde un documento global 'config/maintenance'
       const maintDoc = await getDoc(doc(db, 'config', 'maintenance'));
       if (maintDoc.exists()) {
-        maint = maintDoc.data() as Maintenance;
+        const d = maintDoc.data() as Partial<Maintenance>;
+        maint = {
+          lastTinacos: d.lastTinacos || '',
+          lastFiltros: d.lastFiltros || '',
+          lastMembrana: d.lastMembrana || ''
+        };
       }
 
       // 2. Cargar contador único de ventas desde 'stats/ventas'
@@ -99,13 +104,23 @@
 
   async function saveMaintenance(e: Event) {
     e.preventDefault();
+    if (saving) return;
+
+    saving = true;
     try {
-      saving = true;
-      await setDoc(doc(db, 'config', 'maintenance'), maint);
+      await setDoc(
+        doc(db, 'config', 'maintenance'),
+        {
+          lastTinacos: maint.lastTinacos || '',
+          lastFiltros: maint.lastFiltros || '',
+          lastMembrana: maint.lastMembrana || ''
+        },
+        { merge: true }
+      );
       alert('¡Fechas de mantenimiento actualizadas con éxito!');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error al guardar mantenimiento:', error);
-      alert('Error al guardar los datos.');
+      alert(`No se pudieron guardar las fechas (${error?.code || error?.message || 'error de red'}). Revisa tu conexión e intenta de nuevo.`);
     } finally {
       saving = false;
     }
@@ -210,17 +225,17 @@
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 min-w-0">
           <div class="bg-slate-900/80 p-3 rounded-lg border border-slate-700 space-y-2 min-w-0 overflow-hidden">
             <label class="block text-xs font-bold text-slate-300">🚿 Último Lavado de Tinacos</label>
-            <input type="date" bind:value={maint.lastTinacos} class="w-full min-w-0 max-w-full box-border bg-slate-950 border border-slate-700 rounded-lg p-2 text-slate-100 text-xs focus:border-cyan-400 focus:outline-none" />
+            <input type="date" bind:value={maint.lastTinacos} disabled={saving} class="w-full min-w-0 max-w-full box-border bg-slate-950 border border-slate-700 rounded-lg p-2 text-slate-100 text-xs focus:border-cyan-400 focus:outline-none" />
           </div>
 
           <div class="bg-slate-900/80 p-3 rounded-lg border border-slate-700 space-y-2 min-w-0 overflow-hidden">
             <label class="block text-xs font-bold text-slate-300">🔄 Último Cambio de Filtros</label>
-            <input type="date" bind:value={maint.lastFiltros} class="w-full min-w-0 max-w-full box-border bg-slate-950 border border-slate-700 rounded-lg p-2 text-slate-100 text-xs focus:border-cyan-400 focus:outline-none" />
+            <input type="date" bind:value={maint.lastFiltros} disabled={saving} class="w-full min-w-0 max-w-full box-border bg-slate-950 border border-slate-700 rounded-lg p-2 text-slate-100 text-xs focus:border-cyan-400 focus:outline-none" />
           </div>
 
           <div class="bg-slate-900/80 p-3 rounded-lg border border-slate-700 space-y-2 min-w-0 overflow-hidden">
             <label class="block text-xs font-bold text-slate-300">💧 Membrana Ósmosis Inversa</label>
-            <input type="date" bind:value={maint.lastMembrana} class="w-full min-w-0 max-w-full box-border bg-slate-950 border border-slate-700 rounded-lg p-2 text-slate-100 text-xs focus:border-cyan-400 focus:outline-none" />
+            <input type="date" bind:value={maint.lastMembrana} disabled={saving} class="w-full min-w-0 max-w-full box-border bg-slate-950 border border-slate-700 rounded-lg p-2 text-slate-100 text-xs focus:border-cyan-400 focus:outline-none" />
           </div>
         </div>
 

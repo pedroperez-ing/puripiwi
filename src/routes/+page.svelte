@@ -16,6 +16,7 @@
     rotos: number;
     frecuenciaDias: number;
     lastDelivery: string; // formato 'YYYY-MM-DD'
+    history?: string[];
   }
 
   let clients = $state<Client[]>([]);
@@ -35,6 +36,19 @@
     frecuenciaDias: 4,
     lastDelivery: ''
   });
+
+  function getEffectiveLastDelivery(client: Client): string {
+    if (client.lastDelivery) return client.lastDelivery;
+    if (Array.isArray(client.history) && client.history.length > 0) {
+      return client.history[0] || '';
+    }
+    return '';
+  }
+
+  function getEffectiveFrequency(client: Client): number {
+    const freq = Number(client.frecuenciaDias);
+    return Number.isFinite(freq) && freq > 0 ? freq : 4;
+  }
 
   function extractCoords(input: string): { lat: number; lng: number } | null {
     if (!input) return null;
@@ -65,9 +79,9 @@
     try {
       loading = true;
       const querySnapshot = await getDocs(collection(db, 'clients'));
-      clients = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
+      clients = querySnapshot.docs.map(d => ({
+        id: d.id,
+        ...d.data()
       })) as Client[];
     } catch (error) {
       console.error('Error al cargar clientes:', error);
@@ -87,10 +101,14 @@
 
       await addDoc(collection(db, 'clients'), {
         ...clientData,
+        name: clientData.name.trim(),
+        phone: clientData.phone.trim(),
+        address: clientData.address.trim(),
+        mapLink: clientData.mapLink.trim(),
         defaultGarafones: Number(clientData.defaultGarafones) || 2,
         prestados: Number(clientData.prestados) || 0,
         rotos: Number(clientData.rotos) || 0,
-        frecuenciaDias: Number(clientData.frecuenciaDias) || 4,
+        frecuenciaDias: getEffectiveFrequency(clientData as Client),
         lat: parsedCoords ? parsedCoords.lat : null,
         lng: parsedCoords ? parsedCoords.lng : null,
         createdAt: serverTimestamp()
@@ -120,17 +138,23 @@
 
   // Calcular días transcurridos y estado de días restantes
   function getDeliveryStatus(client: Client) {
-    if (!client.lastDelivery) {
+    const lastDelivery = getEffectiveLastDelivery(client);
+    if (!lastDelivery) {
       return { text: '✨ Nuevo / Sin entregas', class: 'bg-cyan-950/60 text-cyan-300 border-cyan-800' };
     }
 
-    const lastDate = new Date(client.lastDelivery + 'T00:00:00');
+    const lastDate = new Date(lastDelivery + 'T00:00:00');
+    if (Number.isNaN(lastDate.getTime())) {
+      return { text: '✨ Nuevo / Sin entregas', class: 'bg-cyan-950/60 text-cyan-300 border-cyan-800' };
+    }
+
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
     const diffTime = today.getTime() - lastDate.getTime();
     const passedDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-    const remainingDays = client.frecuenciaDias - passedDays;
+    const freq = getEffectiveFrequency(client);
+    const remainingDays = freq - passedDays;
 
     if (remainingDays > 0) {
       return { text: `⏳ Quedan ${remainingDays} día(s)`, class: 'bg-slate-900 text-slate-300 border-slate-700' };
@@ -143,16 +167,31 @@
   }
 
   function needsWaterToday(client: Client): boolean {
-    if (!client.lastDelivery) return true;
-    const lastDate = new Date(client.lastDelivery + 'T00:00:00');
+    const lastDelivery = getEffectiveLastDelivery(client);
+    if (!lastDelivery) return true;
+
+    const lastDate = new Date(lastDelivery + 'T00:00:00');
+    if (Number.isNaN(lastDate.getTime())) return true;
+
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const diffDays = Math.floor((today.getTime() - lastDate.getTime()) / (1000 * 60 * 60 * 24));
-    return diffDays >= client.frecuenciaDias;
+    return diffDays >= getEffectiveFrequency(client);
+  }
+
+  function formatWhatsAppPhone(rawPhone: string): string {
+    const digits = rawPhone.replace(/\D/g, '');
+    if (digits.length === 12 && digits.startsWith('52')) {
+      return digits;
+    }
+    if (digits.length === 13 && digits.startsWith('521')) {
+      return `52${digits.slice(3)}`;
+    }
+    return `52${digits}`;
   }
 
   function openWhatsApp(client: Client) {
-    const cleanPhone = client.phone.replace(/\D/g, '');
+    const phoneWithCode = formatWhatsAppPhone(client.phone || '');
     const hour = new Date().getHours();
     let saludo = 'buenas noches';
     if (hour >= 5 && hour < 12) {
@@ -163,7 +202,7 @@
 
     const rawText = `Hola, ${saludo} ☺️. Solo quería preguntarle si va a necesitar agua el día de hoy? 💧`;
     const message = encodeURIComponent(rawText);
-    window.open(`https://api.whatsapp.com/send?phone=52${cleanPhone}&text=${message}`, '_blank', 'noopener,noreferrer');
+    window.open(`https://api.whatsapp.com/send?phone=${phoneWithCode}&text=${message}`, '_blank', 'noopener,noreferrer');
   }
 
   let suggestedClients = $derived(clients.filter(c => needsWaterToday(c)));
@@ -177,8 +216,10 @@
       <p class="text-xs text-slate-400">Gestión de perfiles, envases y alertas de frecuencia de compra.</p>
     </div>
     <button 
+      type="button"
       onclick={() => showModal = true}
-      class="w-full sm:w-auto bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold px-4 py-2.5 rounded-lg text-sm transition-colors shadow-lg flex items-center justify-center gap-2 cursor-pointer"
+      disabled={savingClient}
+      class="w-full sm:w-auto bg-cyan-500 hover:bg-cyan-600 disabled:opacity-50 text-slate-950 font-bold px-4 py-2.5 rounded-lg text-sm transition-colors shadow-lg flex items-center justify-center gap-2 cursor-pointer"
     >
       ➕ Nuevo Cliente
     </button>
@@ -186,7 +227,7 @@
 
   <!-- Sección de Alertas Inteligentes -->
   <div class="bg-cyan-950/30 border border-cyan-800/50 rounded-xl p-4 space-y-3">
-    <div class="flex items-center justify-between">
+    <div class="flex flex-wrap items-center justify-between gap-2">
       <h3 class="font-bold text-cyan-300 text-sm flex items-center gap-2">
         🔔 Clientes Sugeridos a Contactar Hoy ({suggestedClients.length})
       </h3>
@@ -202,21 +243,22 @@
     {:else}
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
         {#each suggestedClients as client}
-          <div class="bg-slate-900/90 border border-cyan-900/60 rounded-lg p-3 flex justify-between items-center gap-2 shadow-sm">
-            <div>
-              <h4 class="font-bold text-slate-100 text-sm">{client.name}</h4>
-              <p class="text-[11px] text-slate-400">Última entrega: {client.lastDelivery || 'Ninguna'} ({client.defaultGarafones} garrafones)</p>
+          {@const lastDelivery = getEffectiveLastDelivery(client)}
+          <div class="bg-slate-900/90 border border-cyan-900/60 rounded-lg p-3 flex justify-between items-center gap-2 shadow-sm min-w-0">
+            <div class="min-w-0">
+              <h4 class="font-bold text-slate-100 text-sm truncate">{client.name}</h4>
+              <p class="text-[11px] text-slate-400">Última entrega: {lastDelivery || 'Ninguna'} ({Number(client.defaultGarafones) || 2} garrafones)</p>
             </div>
             {#if client.phone}
               <button 
                 type="button"
                 onclick={() => openWhatsApp(client)}
-                class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3 py-2 rounded-lg transition-colors flex items-center gap-1.5 shadow cursor-pointer"
+                class="shrink-0 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3 py-2 rounded-lg transition-colors flex items-center gap-1.5 shadow cursor-pointer"
               >
                 💬 WhatsApp 1 Clic
               </button>
             {:else}
-              <span class="text-[10px] text-slate-500 italic">Sin teléfono</span>
+              <span class="shrink-0 text-[10px] text-slate-500 italic">Sin teléfono</span>
             {/if}
           </div>
         {/each}
@@ -238,30 +280,32 @@
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         {#each clients as client}
           {@const status = getDeliveryStatus(client)}
-          <div class="bg-slate-800/80 border border-slate-700/80 rounded-xl p-4 space-y-3 shadow-md hover:border-cyan-500/50 transition-all">
-            <div class="flex justify-between items-start">
-              <div>
-                <h3 class="font-bold text-base text-slate-100">{client.name}</h3>
+          {@const lastDelivery = getEffectiveLastDelivery(client)}
+          {@const freq = getEffectiveFrequency(client)}
+          <div class="bg-slate-800/80 border border-slate-700/80 rounded-xl p-4 space-y-3 shadow-md hover:border-cyan-500/50 transition-all min-w-0">
+            <div class="flex justify-between items-start gap-2">
+              <div class="min-w-0">
+                <h3 class="font-bold text-base text-slate-100 break-words">{client.name}</h3>
                 <p class="text-xs text-cyan-400">📞 {client.phone || 'Sin teléfono'}</p>
               </div>
-              <div class="text-right flex flex-col items-end gap-1">
+              <div class="text-right flex flex-col items-end gap-1 shrink-0">
                 <span class="text-xs bg-slate-900 px-2.5 py-1 rounded-md border border-slate-700 text-slate-300 font-semibold">
-                  {client.defaultGarafones} Garrafón(es)
+                  {Number(client.defaultGarafones) || 2} Garrafón(es)
                 </span>
               </div>
             </div>
 
             <!-- Indicador Dinámico de Días Restantes -->
-            <div class="flex items-center justify-between text-xs px-3 py-2 rounded-lg border {status.class}">
+            <div class="flex items-center justify-between gap-2 text-xs px-3 py-2 rounded-lg border {status.class}">
               <span>Estado de consumo:</span>
-              <strong class="font-bold">{status.text}</strong>
+              <strong class="font-bold text-right">{status.text}</strong>
             </div>
 
-            <div class="text-xs text-slate-300 space-y-1 bg-slate-900/50 p-2.5 rounded-lg border border-slate-800">
+            <div class="text-xs text-slate-300 space-y-1 bg-slate-900/50 p-2.5 rounded-lg border border-slate-800 break-words">
               <p><strong class="text-slate-400">Dirección:</strong> {client.address || 'No especificada'}</p>
               {#if client.mapLink}
                 <p>
-                  <a href={client.mapLink} target="_blank" rel="noopener noreferrer" class="text-cyan-400 hover:underline flex items-center gap-1 font-medium mt-1">
+                  <a href={client.mapLink} target="_blank" rel="noopener noreferrer" class="text-cyan-400 hover:underline inline-flex items-center gap-1 font-medium mt-1">
                     🗺️ Abrir ubicación en Google Maps
                   </a>
                 </p>
@@ -272,20 +316,20 @@
             <div class="grid grid-cols-2 gap-2 text-xs pt-1">
               <div class="bg-slate-900/80 p-2 rounded border border-slate-800 text-center">
                 <span class="text-slate-400 block">Envases Prestados</span>
-                <strong class="text-cyan-300 text-sm">{client.prestados || 0}</strong>
+                <strong class="text-cyan-300 text-sm">{Number(client.prestados) || 0}</strong>
               </div>
               <div class="bg-slate-900/80 p-2 rounded border border-slate-800 text-center">
                 <span class="text-slate-400 block">Envases Rotos</span>
-                <strong class="text-amber-400 text-sm">{client.rotos || 0}</strong>
+                <strong class="text-amber-400 text-sm">{Number(client.rotos) || 0}</strong>
                 <span class="text-[10px] block text-slate-500">
-                  {(client.rotos || 0) > 2 ? '⚠️ Asignar garrafón desgastado' : '✨ Garrafón en buen estado'}
+                  {(Number(client.rotos) || 0) > 2 ? '⚠️ Asignar garrafón desgastado' : '✨ Garrafón en buen estado'}
                 </span>
               </div>
             </div>
 
-            <div class="text-[11px] text-slate-400 pt-1 flex justify-between items-center border-t border-slate-700/50">
-              <span>Última entrega: <strong class="text-slate-200">{client.lastDelivery || 'Ninguna'}</strong></span>
-              <span>Frecuencia: <strong class="text-slate-200">{client.frecuenciaDias} días</strong></span>
+            <div class="text-[11px] text-slate-400 pt-1 flex justify-between items-center gap-2 border-t border-slate-700/50">
+              <span>Última entrega: <strong class="text-slate-200">{lastDelivery || 'Ninguna'}</strong></span>
+              <span>Frecuencia: <strong class="text-slate-200">{freq} días</strong></span>
             </div>
           </div>
         {/each}
@@ -296,7 +340,7 @@
   <!-- Modal para Nuevo Cliente -->
   {#if showModal}
     <div class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex justify-center items-center p-4 z-50">
-      <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-lg p-6 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+      <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-lg p-6 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto min-w-0">
         <div class="flex justify-between items-center border-b border-slate-800 pb-3">
           <h3 class="text-lg font-bold text-cyan-300">Registrar Nuevo Cliente</h3>
           <button
@@ -307,50 +351,50 @@
           >✕</button>
         </div>
 
-        <form onsubmit={handleAddClient} class="space-y-4 text-sm">
-          <div>
+        <form onsubmit={handleAddClient} class="space-y-4 text-sm min-w-0">
+          <div class="min-w-0">
             <label class="block text-xs text-slate-400 mb-1">Nombre Completo del Cliente</label>
-            <input type="text" bind:value={newClient.name} required disabled={savingClient} placeholder="Ej. Juan Pérez" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
+            <input type="text" bind:value={newClient.name} required disabled={savingClient} placeholder="Ej. Juan Pérez" class="w-full min-w-0 bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
           </div>
 
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 min-w-0">
+            <div class="min-w-0">
               <label class="block text-xs text-slate-400 mb-1">Teléfono / WhatsApp</label>
-              <input type="text" bind:value={newClient.phone} disabled={savingClient} placeholder="Ej. 8112345678" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
+              <input type="text" bind:value={newClient.phone} disabled={savingClient} placeholder="Ej. 5512345678" class="w-full min-w-0 bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
             </div>
-            <div>
+            <div class="min-w-0">
               <label class="block text-xs text-slate-400 mb-1">Garrafones Habituales</label>
-              <input type="number" min="1" bind:value={newClient.defaultGarafones} disabled={savingClient} class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
+              <input type="number" min="1" bind:value={newClient.defaultGarafones} disabled={savingClient} class="w-full min-w-0 bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
             </div>
           </div>
 
-          <div>
+          <div class="min-w-0">
             <label class="block text-xs text-slate-400 mb-1">Dirección y Señas Particulares</label>
-            <textarea bind:value={newClient.address} rows="2" disabled={savingClient} placeholder="Ej. Calle Morelos #123, zaguán negro" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none"></textarea>
+            <textarea bind:value={newClient.address} rows="2" disabled={savingClient} placeholder="Ej. Calle Morelos #123, zaguán negro" class="w-full min-w-0 bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none"></textarea>
           </div>
 
-          <div>
+          <div class="min-w-0">
             <label class="block text-xs text-slate-400 mb-1">Link de Google Maps</label>
-            <input type="url" bind:value={newClient.mapLink} oninput={handleMapLinkInput} disabled={savingClient} placeholder="https://maps.app.goo.gl/..." class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
+            <input type="url" bind:value={newClient.mapLink} oninput={handleMapLinkInput} disabled={savingClient} placeholder="https://maps.app.goo.gl/..." class="w-full min-w-0 bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
           </div>
 
-          <div>
+          <div class="min-w-0">
             <label class="block text-xs text-slate-400 mb-1">Coordenadas (lat, lng) <span class="text-slate-500">— se llenan solas con link largo o pégalas si el link es corto</span></label>
-            <input type="text" bind:value={newClient.coordsText} disabled={savingClient} placeholder="Ej. 19.508123, -99.014256" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
+            <input type="text" bind:value={newClient.coordsText} disabled={savingClient} placeholder="Ej. 19.508123, -99.014256" class="w-full min-w-0 bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
           </div>
 
-          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 min-w-0">
+            <div class="min-w-0">
               <label class="block text-xs text-slate-400 mb-1">Frecuencia de Compra (días)</label>
-              <input type="number" min="1" bind:value={newClient.frecuenciaDias} disabled={savingClient} class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
+              <input type="number" min="1" bind:value={newClient.frecuenciaDias} disabled={savingClient} class="w-full min-w-0 bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
             </div>
-            <div>
+            <div class="min-w-0">
               <label class="block text-xs text-slate-400 mb-1">Envases Prestados</label>
-              <input type="number" min="0" bind:value={newClient.prestados} disabled={savingClient} class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
+              <input type="number" min="0" bind:value={newClient.prestados} disabled={savingClient} class="w-full min-w-0 bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
             </div>
-            <div>
+            <div class="min-w-0">
               <label class="block text-xs text-slate-400 mb-1">Envases Rotos</label>
-              <input type="number" min="0" bind:value={newClient.rotos} disabled={savingClient} class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
+              <input type="number" min="0" bind:value={newClient.rotos} disabled={savingClient} class="w-full min-w-0 bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
             </div>
           </div>
 

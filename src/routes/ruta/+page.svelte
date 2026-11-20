@@ -47,6 +47,7 @@
   let emptyReturned = $state(0); // Buenos devueltos
   let brokenReturned = $state(0); // Rotos devueltos en la misma visita
   let delivering = $state(false);
+  let creatingOrder = $state(false);
 
   onMount(async () => {
     await fetchData();
@@ -177,11 +178,12 @@
 
   async function handleCreateOrder(e: Event) {
     e.preventDefault();
-    if (!selectedClientId) return;
+    if (!selectedClientId || creatingOrder) return;
 
     const client = clients.find(c => c.id === selectedClientId);
     if (!client) return;
 
+    creatingOrder = true;
     try {
       await addDoc(collection(db, 'orders'), {
         clientId: client.id,
@@ -198,9 +200,11 @@
       selectedClientId = '';
       customGarafones = 2;
       await fetchData();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error al crear pedido:', error);
-      alert('Error al registrar el pedido.');
+      alert(`No se pudo registrar el pedido (${error?.code || error?.message || 'error de red'}). Revisa tu conexión e intenta de nuevo.`);
+    } finally {
+      creatingOrder = false;
     }
   }
 
@@ -464,7 +468,8 @@
     </div>
     <button 
       onclick={() => showNewOrderModal = true}
-      class="w-full sm:w-auto bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold px-4 py-2.5 rounded-lg text-sm transition-colors shadow-lg flex items-center justify-center gap-2 cursor-pointer"
+      disabled={delivering || creatingOrder}
+      class="w-full sm:w-auto bg-cyan-500 hover:bg-cyan-600 disabled:opacity-50 text-slate-950 font-bold px-4 py-2.5 rounded-lg text-sm transition-colors shadow-lg flex items-center justify-center gap-2 cursor-pointer"
     >
       ➕ Agregar Pedido Rápido
     </button>
@@ -558,7 +563,7 @@
           <div class="w-full sm:w-auto flex flex-col gap-2">
             <button 
               onclick={() => openDeliverModal(order)}
-              disabled={delivering}
+              disabled={delivering || creatingOrder}
               class="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-black px-6 py-3 rounded-xl transition-all shadow-lg text-sm flex items-center justify-center gap-2 cursor-pointer active:scale-95"
             >
               ✅ Ya Entregué
@@ -639,13 +644,18 @@
       <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md p-6 space-y-4 shadow-2xl">
         <div class="flex justify-between items-center border-b border-slate-800 pb-3">
           <h3 class="text-lg font-bold text-cyan-300">Registrar Pedido para Hoy</h3>
-          <button onclick={() => showNewOrderModal = false} class="text-slate-400 hover:text-white font-bold text-lg cursor-pointer">✕</button>
+          <button
+            type="button"
+            disabled={creatingOrder}
+            onclick={() => showNewOrderModal = false}
+            class="text-slate-400 hover:text-white disabled:opacity-50 font-bold text-lg cursor-pointer"
+          >✕</button>
         </div>
 
         <form onsubmit={handleCreateOrder} class="space-y-4 text-sm">
           <div>
             <label class="block text-xs text-slate-400 mb-1">Seleccionar Cliente</label>
-            <select bind:value={selectedClientId} required class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none">
+            <select bind:value={selectedClientId} required disabled={creatingOrder} class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none">
               <option value="" disabled>-- Elige un cliente --</option>
               {#each clients as client}
                 <option value={client.id}>{client.name} ({client.address || 'Sin dirección'})</option>
@@ -655,12 +665,21 @@
 
           <div>
             <label class="block text-xs text-slate-400 mb-1">Cantidad de Garrafones para este Pedido</label>
-            <input type="number" min="1" bind:value={customGarafones} required class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
+            <input type="number" min="1" bind:value={customGarafones} required disabled={creatingOrder} class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
           </div>
 
           <div class="flex justify-end gap-3 pt-4 border-t border-slate-800">
-            <button type="button" onclick={() => showNewOrderModal = false} class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg font-medium cursor-pointer">Cancelar</button>
-            <button type="submit" class="px-5 py-2 bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold rounded-lg shadow-md cursor-pointer">Añadir a la Ruta</button>
+            <button
+              type="button"
+              disabled={creatingOrder}
+              onclick={() => showNewOrderModal = false}
+              class="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 rounded-lg font-medium cursor-pointer"
+            >Cancelar</button>
+            <button
+              type="submit"
+              disabled={creatingOrder}
+              class="px-5 py-2 bg-cyan-500 hover:bg-cyan-600 disabled:opacity-50 text-slate-950 font-bold rounded-lg shadow-md cursor-pointer"
+            >{creatingOrder ? 'Añadiendo...' : 'Añadir a la Ruta'}</button>
           </div>
         </form>
       </div>
