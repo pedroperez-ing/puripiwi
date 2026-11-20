@@ -46,6 +46,7 @@
   let orderToDeliver = $state<Order | null>(null);
   let emptyReturned = $state(0); // Buenos devueltos
   let brokenReturned = $state(0); // Rotos devueltos en la misma visita
+  let delivering = $state(false);
 
   onMount(async () => {
     await fetchData();
@@ -102,6 +103,7 @@
 
   // Actualiza el documento único stats/ventas sin acumular registros históricos
   async function updateSalesCounter(garafonesSold: number) {
+    const safeSold = Number(garafonesSold) || 0;
     const now = new Date();
     const curWeek = getWeekMondayKey(now);
     const prevWeek = getPrevWeekMondayKey(now);
@@ -119,13 +121,13 @@
     const savedWeek = data.weekKey || '';
 
     if (savedWeek === curWeek) {
-      semanaActual += garafonesSold;
+      semanaActual += safeSold;
     } else if (savedWeek === prevWeek) {
       semanaAnterior = semanaActual;
-      semanaActual = garafonesSold;
+      semanaActual = safeSold;
     } else {
       semanaAnterior = 0;
-      semanaActual = garafonesSold;
+      semanaActual = safeSold;
     }
 
     let mesActual = Number(data.mesActual) || 0;
@@ -133,13 +135,13 @@
     const savedMonth = data.monthKey || '';
 
     if (savedMonth === curMonth) {
-      mesActual += garafonesSold;
+      mesActual += safeSold;
     } else if (savedMonth === prevMonth) {
       mesAnterior = mesActual;
-      mesActual = garafonesSold;
+      mesActual = safeSold;
     } else {
       mesAnterior = 0;
-      mesActual = garafonesSold;
+      mesActual = safeSold;
     }
 
     let anioActual = Number(data.anioActual) || 0;
@@ -147,26 +149,30 @@
     const savedYear = data.yearKey || '';
 
     if (savedYear === curYear) {
-      anioActual += garafonesSold;
+      anioActual += safeSold;
     } else if (savedYear === prevYear) {
       anioAnterior = anioActual;
-      anioActual = garafonesSold;
+      anioActual = safeSold;
     } else {
       anioAnterior = 0;
-      anioActual = garafonesSold;
+      anioActual = safeSold;
     }
 
-    await setDoc(statsRef, {
-      semanaActual,
-      semanaAnterior,
-      weekKey: curWeek,
-      mesActual,
-      mesAnterior,
-      monthKey: curMonth,
-      anioActual,
-      anioAnterior,
-      yearKey: curYear
-    });
+    await setDoc(
+      statsRef,
+      {
+        semanaActual,
+        semanaAnterior,
+        weekKey: curWeek,
+        mesActual,
+        mesAnterior,
+        monthKey: curMonth,
+        anioActual,
+        anioAnterior,
+        yearKey: curYear
+      },
+      { merge: true }
+    );
   }
 
   async function handleCreateOrder(e: Event) {
@@ -183,7 +189,7 @@
         clientPhone: client.phone || '',
         address: client.address || 'Sin dirección',
         mapLink: client.mapLink || '',
-        garafones: Number(customGarafones),
+        garafones: Number(customGarafones) || 1,
         status: 'pendiente',
         createdAt: serverTimestamp()
       });
@@ -312,8 +318,9 @@
 
   // Paso 1: Abrir modal de Doble Check sugiriendo los envases
   function openDeliverModal(order: Order) {
+    if (delivering) return;
     orderToDeliver = order;
-    emptyReturned = order.garafones; // Sugiere por defecto los buenos entregados
+    emptyReturned = Number(order.garafones) || 0; // Sugiere por defecto los buenos entregados
     brokenReturned = 0; // Por defecto 0 rotos
     showDeliverModal = true;
   }
@@ -321,27 +328,31 @@
   // Paso 2: Confirmar entrega con control inteligente de buenos, rotos, frecuencia y contador de ventas
   async function confirmDelivery(e: Event) {
     e.preventDefault();
-    if (!orderToDeliver) return;
+    if (!orderToDeliver || delivering) return;
+
+    delivering = true;
+    const currentOrder = orderToDeliver;
+    const soldQty = Number(currentOrder.garafones) || 0;
+    const goodQty = Number(emptyReturned) || 0;
+    const brokenQty = Number(brokenReturned) || 0;
 
     try {
-      const todayStr = new Date().toISOString().split('T')[0];
+      const now = new Date();
+      const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
-      // 1. Eliminar pedido de orders para no acumular registros entregados
-      await deleteDoc(doc(db, 'orders', orderToDeliver.id));
+      // 1. Actualizar contador único de ventas primero para no perder la venta si ocurre un corte de red
+      await updateSalesCounter(soldQty);
 
-      // 2. Actualizar contador único de ventas (semana, mes y año)
-      await updateSalesCounter(Number(orderToDeliver.garafones) || 0);
+      // 2. Actualizar cliente, historial (últimas 5), frecuencia, envases prestados y envases rotos
+      const clientRef = doc(db, 'clients', currentOrder.clientId);
+      const client = clients.find(c => c.id === currentOrder.clientId);
 
-      // 3. Actualizar cliente, historial (últimas 5), frecuencia, envases prestados y envases rotos
-      const clientRef = doc(db, 'clients', orderToDeliver.clientId);
-      const client = clients.find(c => c.id === orderToDeliver.clientId);
-      
       if (client) {
-        let currentHistory = client.history || [];
+        let currentHistory = Array.isArray(client.history) ? [...client.history] : [];
         currentHistory = [todayStr, ...currentHistory].slice(0, 5);
 
         // Recálculo automático de frecuencia
-        let newFrecuencia = client.frecuenciaDias || 4;
+        let newFrecuencia = Number(client.frecuenciaDias) || 4;
         if (currentHistory.length >= 2) {
           let totalDaysDiff = 0;
           for (let i = 0; i < currentHistory.length - 1; i++) {
@@ -356,24 +367,19 @@
         }
 
         // Recálculo automático de garrafones habituales por promedio (últimas 5 visitas)
-        let currentGarafonesHistory = client.garrafonesHistory || [];
-        currentGarafonesHistory = [Number(orderToDeliver.garafones), ...currentGarafonesHistory].slice(0, 5);
-        const totalGarafonesSum = currentGarafonesHistory.reduce((acc, qty) => acc + qty, 0);
+        let currentGarafonesHistory = Array.isArray(client.garrafonesHistory) ? [...client.garrafonesHistory] : [];
+        currentGarafonesHistory = [soldQty, ...currentGarafonesHistory].slice(0, 5);
+        const totalGarafonesSum = currentGarafonesHistory.reduce((acc, qty) => acc + (Number(qty) || 0), 0);
         const avgGarafones = Math.round(totalGarafonesSum / currentGarafonesHistory.length);
-        const newDefaultGarafones = avgGarafones > 0 ? avgGarafones : (client.defaultGarafones || 2);
+        const newDefaultGarafones = avgGarafones > 0 ? avgGarafones : (Number(client.defaultGarafones) || 2);
 
-        // Control de Envases: 
-        // Entregados llenos: orderToDeliver.garafones
-        // Buenos devueltos: Number(emptyReturned)
-        // Rotos devueltos: Number(brokenReturned)
-        const totalDevueltosEfectivos = Number(emptyReturned) + Number(brokenReturned);
-        const currentPrestados = client.prestados || 0;
-        const currentRotos = client.rotos || 0;
+        const totalDevueltosEfectivos = goodQty + brokenQty;
+        const currentPrestados = Number(client.prestados) || 0;
+        const currentRotos = Number(client.rotos) || 0;
 
-        // Si devolvió menos de lo que se llevó en total (buenos + rotos), la diferencia se va a prestados/adeudo
-        const diferenciaEnvases = orderToDeliver.garafones - totalDevueltosEfectivos;
+        const diferenciaEnvases = soldQty - totalDevueltosEfectivos;
         const nuevosPrestados = Math.max(0, currentPrestados + diferenciaEnvases);
-        const nuevosRotos = currentRotos + Number(brokenReturned);
+        const nuevosRotos = currentRotos + brokenQty;
 
         await updateDoc(clientRef, {
           lastDelivery: todayStr,
@@ -382,16 +388,21 @@
           defaultGarafones: newDefaultGarafones,
           garrafonesHistory: currentGarafonesHistory,
           prestados: nuevosPrestados,
-          rotos: nuevosRotos // Acumula el garrafón roto detectado en la entrega
+          rotos: nuevosRotos
         });
       }
+
+      // 3. Eliminar pedido de orders una vez guardados ventas y cliente
+      await deleteDoc(doc(db, 'orders', currentOrder.id));
 
       showDeliverModal = false;
       orderToDeliver = null;
       await fetchData();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error al confirmar entrega:', error);
-      alert('Hubo un error al actualizar la entrega.');
+      alert(`No se pudo completar la entrega (${error?.code || error?.message || 'error de red'}). Revisa tu conexión e intenta de nuevo.`);
+    } finally {
+      delivering = false;
     }
   }
 
@@ -547,7 +558,8 @@
           <div class="w-full sm:w-auto flex flex-col gap-2">
             <button 
               onclick={() => openDeliverModal(order)}
-              class="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-500 text-white font-black px-6 py-3 rounded-xl transition-all shadow-lg text-sm flex items-center justify-center gap-2 cursor-pointer active:scale-95"
+              disabled={delivering}
+              class="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-black px-6 py-3 rounded-xl transition-all shadow-lg text-sm flex items-center justify-center gap-2 cursor-pointer active:scale-95"
             >
               ✅ Ya Entregué
             </button>
@@ -563,7 +575,12 @@
       <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md p-6 space-y-4 shadow-2xl">
         <div class="flex justify-between items-center border-b border-slate-800 pb-3">
           <h3 class="text-lg font-bold text-cyan-300">Confirmar Entrega: {orderToDeliver.clientName}</h3>
-          <button onclick={() => showDeliverModal = false} class="text-slate-400 hover:text-white font-bold text-lg cursor-pointer">✕</button>
+          <button
+            type="button"
+            disabled={delivering}
+            onclick={() => { showDeliverModal = false; orderToDeliver = null; }}
+            class="text-slate-400 hover:text-white disabled:opacity-50 font-bold text-lg cursor-pointer"
+          >✕</button>
         </div>
 
         <div class="bg-slate-950/70 p-3 rounded-xl border border-slate-800 text-xs space-y-1 text-slate-300">
@@ -579,6 +596,7 @@
               min="0" 
               bind:value={emptyReturned} 
               required 
+              disabled={delivering}
               class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 font-bold focus:border-cyan-400 focus:outline-none" 
             />
             <span class="text-[11px] text-slate-500 mt-0.5 block">Sugerido por defecto igual a los entregados.</span>
@@ -591,14 +609,24 @@
               min="0" 
               bind:value={brokenReturned} 
               required 
+              disabled={delivering}
               class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-amber-300 font-bold focus:border-amber-400 focus:outline-none" 
             />
             <span class="text-[11px] text-slate-500 mt-0.5 block">⚠️ Si alguno vino roto, ponlo aquí para registrarlo en su historial de rotos.</span>
           </div>
 
           <div class="flex justify-end gap-3 pt-4 border-t border-slate-800">
-            <button type="button" onclick={() => showDeliverModal = false} class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg font-medium cursor-pointer">Cancelar</button>
-            <button type="submit" class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg shadow-md cursor-pointer">Confirmar y Guardar</button>
+            <button
+              type="button"
+              disabled={delivering}
+              onclick={() => { showDeliverModal = false; orderToDeliver = null; }}
+              class="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 rounded-lg font-medium cursor-pointer"
+            >Cancelar</button>
+            <button
+              type="submit"
+              disabled={delivering}
+              class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold rounded-lg shadow-md cursor-pointer"
+            >{delivering ? 'Guardando...' : 'Confirmar y Guardar'}</button>
           </div>
         </form>
       </div>

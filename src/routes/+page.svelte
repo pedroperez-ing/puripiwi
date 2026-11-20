@@ -21,6 +21,7 @@
   let clients = $state<Client[]>([]);
   let loading = $state(true);
   let showModal = $state(false);
+  let savingClient = $state(false);
 
   let newClient = $state({
     name: '',
@@ -77,16 +78,24 @@
 
   async function handleAddClient(e: Event) {
     e.preventDefault();
+    if (savingClient) return;
+
+    savingClient = true;
     try {
       const parsedCoords = extractCoords(newClient.coordsText) || extractCoords(newClient.mapLink);
       const { coordsText, ...clientData } = newClient;
 
       await addDoc(collection(db, 'clients'), {
         ...clientData,
+        defaultGarafones: Number(clientData.defaultGarafones) || 2,
+        prestados: Number(clientData.prestados) || 0,
+        rotos: Number(clientData.rotos) || 0,
+        frecuenciaDias: Number(clientData.frecuenciaDias) || 4,
         lat: parsedCoords ? parsedCoords.lat : null,
         lng: parsedCoords ? parsedCoords.lng : null,
         createdAt: serverTimestamp()
       });
+
       newClient = {
         name: '',
         phone: '',
@@ -101,9 +110,11 @@
       };
       showModal = false;
       await fetchClients();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error al guardar cliente:', error);
-      alert('Hubo un error al guardar el cliente.');
+      alert(`No se pudo guardar el cliente (${error?.code || error?.message || 'error de red'}). Revisa tu conexión e intenta de nuevo.`);
+    } finally {
+      savingClient = false;
     }
   }
 
@@ -288,59 +299,73 @@
       <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-lg p-6 space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
         <div class="flex justify-between items-center border-b border-slate-800 pb-3">
           <h3 class="text-lg font-bold text-cyan-300">Registrar Nuevo Cliente</h3>
-          <button onclick={() => showModal = false} class="text-slate-400 hover:text-white font-bold text-lg cursor-pointer">✕</button>
+          <button
+            type="button"
+            disabled={savingClient}
+            onclick={() => showModal = false}
+            class="text-slate-400 hover:text-white disabled:opacity-50 font-bold text-lg cursor-pointer"
+          >✕</button>
         </div>
 
         <form onsubmit={handleAddClient} class="space-y-4 text-sm">
           <div>
             <label class="block text-xs text-slate-400 mb-1">Nombre Completo del Cliente</label>
-            <input type="text" bind:value={newClient.name} required placeholder="Ej. Juan Pérez" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
+            <input type="text" bind:value={newClient.name} required disabled={savingClient} placeholder="Ej. Juan Pérez" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
           </div>
 
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label class="block text-xs text-slate-400 mb-1">Teléfono / WhatsApp</label>
-              <input type="text" bind:value={newClient.phone} placeholder="Ej. 8112345678" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
+              <input type="text" bind:value={newClient.phone} disabled={savingClient} placeholder="Ej. 8112345678" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
             </div>
             <div>
               <label class="block text-xs text-slate-400 mb-1">Garrafones Habituales</label>
-              <input type="number" min="1" bind:value={newClient.defaultGarafones} class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
+              <input type="number" min="1" bind:value={newClient.defaultGarafones} disabled={savingClient} class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
             </div>
           </div>
 
           <div>
             <label class="block text-xs text-slate-400 mb-1">Dirección y Señas Particulares</label>
-            <textarea bind:value={newClient.address} rows="2" placeholder="Ej. Calle Morelos #123, zaguán negro" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none"></textarea>
+            <textarea bind:value={newClient.address} rows="2" disabled={savingClient} placeholder="Ej. Calle Morelos #123, zaguán negro" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none"></textarea>
           </div>
 
           <div>
             <label class="block text-xs text-slate-400 mb-1">Link de Google Maps</label>
-            <input type="url" bind:value={newClient.mapLink} oninput={handleMapLinkInput} placeholder="https://maps.app.goo.gl/..." class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
+            <input type="url" bind:value={newClient.mapLink} oninput={handleMapLinkInput} disabled={savingClient} placeholder="https://maps.app.goo.gl/..." class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
           </div>
 
           <div>
             <label class="block text-xs text-slate-400 mb-1">Coordenadas (lat, lng) <span class="text-slate-500">— se llenan solas con link largo o pégalas si el link es corto</span></label>
-            <input type="text" bind:value={newClient.coordsText} placeholder="Ej. 19.508123, -99.014256" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
+            <input type="text" bind:value={newClient.coordsText} disabled={savingClient} placeholder="Ej. 19.508123, -99.014256" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
           </div>
 
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label class="block text-xs text-slate-400 mb-1">Frecuencia de Compra (días)</label>
-              <input type="number" min="1" bind:value={newClient.frecuenciaDias} class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
+              <input type="number" min="1" bind:value={newClient.frecuenciaDias} disabled={savingClient} class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
             </div>
             <div>
               <label class="block text-xs text-slate-400 mb-1">Envases Prestados</label>
-              <input type="number" min="0" bind:value={newClient.prestados} class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
+              <input type="number" min="0" bind:value={newClient.prestados} disabled={savingClient} class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
             </div>
             <div>
               <label class="block text-xs text-slate-400 mb-1">Envases Rotos</label>
-              <input type="number" min="0" bind:value={newClient.rotos} class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
+              <input type="number" min="0" bind:value={newClient.rotos} disabled={savingClient} class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
             </div>
           </div>
 
           <div class="flex justify-end gap-3 pt-4 border-t border-slate-800">
-            <button type="button" onclick={() => showModal = false} class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg font-medium cursor-pointer">Cancelar</button>
-            <button type="submit" class="px-5 py-2 bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold rounded-lg shadow-md cursor-pointer">Guardar Cliente</button>
+            <button
+              type="button"
+              disabled={savingClient}
+              onclick={() => showModal = false}
+              class="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 rounded-lg font-medium cursor-pointer"
+            >Cancelar</button>
+            <button
+              type="submit"
+              disabled={savingClient}
+              class="px-5 py-2 bg-cyan-500 hover:bg-cyan-600 disabled:opacity-50 text-slate-950 font-bold rounded-lg shadow-md cursor-pointer"
+            >{savingClient ? 'Guardando...' : 'Guardar Cliente'}</button>
           </div>
         </form>
       </div>
