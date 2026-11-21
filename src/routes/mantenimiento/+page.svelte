@@ -2,30 +2,28 @@
   import { onMount } from 'svelte';
   import { db } from '$lib/firebase';
   import { doc, setDoc, getDoc } from 'firebase/firestore';
+  import type {
+    AccountingReportDoc,
+    CostConfig,
+    MaintenanceState,
+    SalesCounters
+  } from '$lib/types/purificadora';
+  import {
+    DEFAULT_COST_CONFIG,
+    DEFAULT_MAINTENANCE_STATE,
+    calcularCostosUnitarios,
+    construirInformeMensual
+  } from '$lib/utils/contabilidad';
 
-  interface Maintenance {
-    lastTinacos: string;
-    lastFiltros: string;
-    lastMembrana: string;
-  }
-
-  interface SalesCounters {
-    semanaActual: number;
-    semanaAnterior: number;
-    weekKey?: string;
-    mesActual: number;
-    mesAnterior: number;
-    monthKey?: string;
-    anioActual: number;
-    anioAnterior: number;
-    yearKey?: string;
-  }
-
-  let maint = $state<Maintenance>({
-    lastTinacos: '',
+  let maint = $state<MaintenanceState>({ ...DEFAULT_MAINTENANCE_STATE });
+  let prevMaintDates = $state({
     lastFiltros: '',
     lastMembrana: ''
   });
+
+  let costConfig = $state<CostConfig>({ ...DEFAULT_COST_CONFIG });
+  let showCostEditor = $state(false);
+  let savingCosts = $state(false);
 
   let rawSales = $state<SalesCounters>({
     semanaActual: 0,
@@ -33,11 +31,30 @@
     mesActual: 0,
     mesAnterior: 0,
     anioActual: 0,
-    anioAnterior: 0
+    anioAnterior: 0,
+    kmSemanaActual: 0,
+    kmSemanaAnterior: 0,
+    kmMesActual: 0,
+    kmMesAnterior: 0,
+    kmAnioActual: 0,
+    kmAnioAnterior: 0
+  });
+
+  let reportDoc = $state<AccountingReportDoc>({
+    months: {},
+    osmosisDatesAllTime: [],
+    totalFiltrosAllTime: 0
   });
 
   let loading = $state(true);
   let saving = $state(false);
+
+  const nowInitial = new Date();
+  let selectedMonthKey = $state(
+    `${nowInitial.getFullYear()}-${String(nowInitial.getMonth() + 1).padStart(2, '0')}`
+  );
+  let selectedYearKey = $state(`${nowInitial.getFullYear()}`);
+  let reportMode = $state<'mensual' | 'anual'>('mensual');
 
   onMount(async () => {
     await loadData();
@@ -76,29 +93,94 @@
     return `${date.getFullYear() - 1}`;
   }
 
+  function formatMoney(val: number): string {
+    return `$${(Number(val) || 0).toFixed(2)}`;
+  }
+
   async function loadData() {
     try {
       loading = true;
-      // 1. Cargar datos de mantenimiento desde un documento global 'config/maintenance'
-      const maintDoc = await getDoc(doc(db, 'config', 'maintenance'));
-      if (maintDoc.exists()) {
-        const d = maintDoc.data() as Partial<Maintenance>;
+
+      const [maintSnap, salesSnap, costsSnap, reportSnap] = await Promise.all([
+        getDoc(doc(db, 'config', 'maintenance')),
+        getDoc(doc(db, 'stats', 'ventas')),
+        getDoc(doc(db, 'config', 'costs')),
+        getDoc(doc(db, 'stats', 'reportes'))
+      ]);
+
+      if (maintSnap.exists()) {
+        const d = maintSnap.data() as Partial<MaintenanceState>;
         maint = {
+          ...DEFAULT_MAINTENANCE_STATE,
+          ...d,
           lastTinacos: d.lastTinacos || '',
           lastFiltros: d.lastFiltros || '',
-          lastMembrana: d.lastMembrana || ''
+          lastMembrana: d.lastMembrana || '',
+          garrafonesDesdeFiltros: Number(d.garrafonesDesdeFiltros) || 0,
+          garrafonesDesdeMembrana: Number(d.garrafonesDesdeMembrana) || 0,
+          juegosFiltrosUsadosTotal: Number(d.juegosFiltrosUsadosTotal) || 0,
+          cambiosOsmosisHistorial: Array.isArray(d.cambiosOsmosisHistorial)
+            ? d.cambiosOsmosisHistorial
+            : []
+        };
+        prevMaintDates = {
+          lastFiltros: maint.lastFiltros,
+          lastMembrana: maint.lastMembrana
         };
       }
 
-      // 2. Cargar contador único de ventas desde 'stats/ventas'
-      const salesDoc = await getDoc(doc(db, 'stats', 'ventas'));
-      if (salesDoc.exists()) {
-        rawSales = { ...rawSales, ...(salesDoc.data() as SalesCounters) };
+      if (salesSnap.exists()) {
+        rawSales = { ...rawSales, ...(salesSnap.data() as SalesCounters) };
+      }
+
+      if (costsSnap.exists()) {
+        costConfig = { ...DEFAULT_COST_CONFIG, ...(costsSnap.data() as Partial<CostConfig>) };
+      }
+
+      if (reportSnap.exists()) {
+        const r = reportSnap.data() as Partial<AccountingReportDoc>;
+        reportDoc = {
+          months: r.months || {},
+          osmosisDatesAllTime: Array.isArray(r.osmosisDatesAllTime) ? r.osmosisDatesAllTime : [],
+          totalFiltrosAllTime: Number(r.totalFiltrosAllTime) || 0
+        };
       }
     } catch (error) {
-      console.error('Error al cargar datos de mantenimiento y ventas:', error);
+      console.error('Error al cargar datos de mantenimiento y contabilidad:', error);
     } finally {
       loading = false;
+    }
+  }
+
+  async function saveCostConfig(e: Event) {
+    e.preventDefault();
+    if (savingCosts) return;
+    savingCosts = true;
+    try {
+      const normalized: CostConfig = {
+        precioGarrafon: Number(costConfig.precioGarrafon) || 21,
+        costoTapa: Number(costConfig.costoTapa) || 0,
+        costoSello: Number(costConfig.costoSello) || 0,
+        costoJabonCloro: Number(costConfig.costoJabonCloro) || 0,
+        rendimientoKmPorLitro: Number(costConfig.rendimientoKmPorLitro) || 15,
+        precioGasolinaLitro: Number(costConfig.precioGasolinaLitro) || 25,
+        costoJuegoFiltros: Number(costConfig.costoJuegoFiltros) || 110,
+        filtrosPorJuego: Math.max(1, Number(costConfig.filtrosPorJuego) || 3),
+        costoMembranaUnitaria: Number(costConfig.costoMembranaUnitaria) || 1000,
+        cantidadMembranas: Math.max(1, Number(costConfig.cantidadMembranas) || 2),
+        costoLavadoTinacos: Number(costConfig.costoLavadoTinacos) || 0,
+        costoLuzMensual: Number(costConfig.costoLuzMensual) || 0,
+        costoAguaMensual: Number(costConfig.costoAguaMensual) || 0
+      };
+      await setDoc(doc(db, 'config', 'costs'), normalized, { merge: true });
+      costConfig = normalized;
+      showCostEditor = false;
+      alert('¡Parámetros de costos guardados!');
+    } catch (error: any) {
+      console.error('Error al guardar costos:', error);
+      alert(`No se pudieron guardar los costos (${error?.code || error?.message || 'error de red'}).`);
+    } finally {
+      savingCosts = false;
     }
   }
 
@@ -108,25 +190,90 @@
 
     saving = true;
     try {
-      await setDoc(
-        doc(db, 'config', 'maintenance'),
-        {
-          lastTinacos: maint.lastTinacos || '',
-          lastFiltros: maint.lastFiltros || '',
-          lastMembrana: maint.lastMembrana || ''
-        },
-        { merge: true }
-      );
-      alert('¡Fechas de mantenimiento actualizadas con éxito!');
+      const now = new Date();
+      const curMonth = getMonthKey(now);
+
+      const filtroChanged =
+        Boolean(maint.lastFiltros) && maint.lastFiltros !== prevMaintDates.lastFiltros;
+      const osmosisChanged =
+        Boolean(maint.lastMembrana) && maint.lastMembrana !== prevMaintDates.lastMembrana;
+
+      let nextGarrafonesFiltros = Number(maint.garrafonesDesdeFiltros) || 0;
+      let nextGarrafonesOsmosis = Number(maint.garrafonesDesdeMembrana) || 0;
+      let nextJuegosFiltrosTotal = Number(maint.juegosFiltrosUsadosTotal) || 0;
+      let nextOsmosisHistorial = [...(maint.cambiosOsmosisHistorial || [])];
+
+      const monthsMap = { ...(reportDoc.months || {}) };
+      const monthEntry = construirInformeMensual(curMonth, monthsMap[curMonth], costConfig);
+      let nextOsmosisAllTime = [...(reportDoc.osmosisDatesAllTime || [])];
+      let nextFiltrosAllTime =
+        Number(reportDoc.totalFiltrosAllTime) || nextJuegosFiltrosTotal;
+
+      if (filtroChanged) {
+        nextJuegosFiltrosTotal += 1;
+        nextFiltrosAllTime += 1;
+        monthEntry.juegosFiltrosUsados = (Number(monthEntry.juegosFiltrosUsados) || 0) + 1;
+        nextGarrafonesFiltros = 0;
+      }
+
+      if (osmosisChanged) {
+        const record = {
+          date: maint.lastMembrana,
+          garrafonesCicloAnterior: nextGarrafonesOsmosis
+        };
+        nextOsmosisHistorial = [record, ...nextOsmosisHistorial];
+        nextOsmosisAllTime = [record, ...nextOsmosisAllTime];
+        const fechasMes = new Set(monthEntry.cambiosOsmosisFechas || []);
+        fechasMes.add(maint.lastMembrana);
+        monthEntry.cambiosOsmosisFechas = Array.from(fechasMes);
+        nextGarrafonesOsmosis = 0;
+      }
+
+      const updatedMaint: MaintenanceState = {
+        ...maint,
+        garrafonesDesdeFiltros: nextGarrafonesFiltros,
+        garrafonesDesdeMembrana: nextGarrafonesOsmosis,
+        juegosFiltrosUsadosTotal: nextJuegosFiltrosTotal,
+        cambiosOsmosisHistorial: nextOsmosisHistorial
+      };
+
+      monthsMap[curMonth] = construirInformeMensual(curMonth, monthEntry, costConfig);
+
+      await Promise.all([
+        setDoc(doc(db, 'config', 'maintenance'), updatedMaint, { merge: true }),
+        setDoc(
+          doc(db, 'stats', 'reportes'),
+          {
+            months: monthsMap,
+            osmosisDatesAllTime: nextOsmosisAllTime,
+            totalFiltrosAllTime: nextFiltrosAllTime
+          },
+          { merge: true }
+        )
+      ]);
+
+      maint = updatedMaint;
+      reportDoc = {
+        months: monthsMap,
+        osmosisDatesAllTime: nextOsmosisAllTime,
+        totalFiltrosAllTime: nextFiltrosAllTime
+      };
+      prevMaintDates = {
+        lastFiltros: maint.lastFiltros,
+        lastMembrana: maint.lastMembrana
+      };
+
+      alert('¡Mantenimiento y registros actualizados con éxito!');
     } catch (error: any) {
       console.error('Error al guardar mantenimiento:', error);
-      alert(`No se pudieron guardar las fechas (${error?.code || error?.message || 'error de red'}). Revisa tu conexión e intenta de nuevo.`);
+      alert(
+        `No se pudieron guardar los datos (${error?.code || error?.message || 'error de red'}). Revisa tu conexión e intenta de nuevo.`
+      );
     } finally {
       saving = false;
     }
   }
 
-  // Ajuste automático en pantalla si ya cambió la semana, el mes o el año calendario
   let stats = $derived.by(() => {
     const now = new Date();
     const curWeek = getWeekMondayKey(now);
@@ -138,44 +285,274 @@
 
     let weekTotal = 0;
     let weekPrev = 0;
+    let kmWeek = 0;
     if (rawSales.weekKey === curWeek) {
       weekTotal = Number(rawSales.semanaActual) || 0;
       weekPrev = Number(rawSales.semanaAnterior) || 0;
+      kmWeek = Number(rawSales.kmSemanaActual) || 0;
     } else if (rawSales.weekKey === prevWeek) {
       weekTotal = 0;
       weekPrev = Number(rawSales.semanaActual) || 0;
+      kmWeek = 0;
     }
 
     let monthTotal = 0;
     let monthPrev = 0;
+    let kmMonth = 0;
     if (rawSales.monthKey === curMonth) {
       monthTotal = Number(rawSales.mesActual) || 0;
       monthPrev = Number(rawSales.mesAnterior) || 0;
+      kmMonth = Number(rawSales.kmMesActual) || 0;
     } else if (rawSales.monthKey === prevMonth) {
       monthTotal = 0;
       monthPrev = Number(rawSales.mesActual) || 0;
+      kmMonth = 0;
     }
 
     let yearTotal = 0;
     let yearPrev = 0;
+    let kmYear = 0;
     if (rawSales.yearKey === curYear) {
       yearTotal = Number(rawSales.anioActual) || 0;
       yearPrev = Number(rawSales.anioAnterior) || 0;
+      kmYear = Number(rawSales.kmAnioActual) || 0;
     } else if (rawSales.yearKey === prevYear) {
       yearTotal = 0;
       yearPrev = Number(rawSales.anioActual) || 0;
+      kmYear = 0;
     }
 
-    return { weekTotal, weekPrev, monthTotal, monthPrev, yearTotal, yearPrev };
+    return {
+      weekTotal,
+      weekPrev,
+      monthTotal,
+      monthPrev,
+      yearTotal,
+      yearPrev,
+      kmWeek,
+      kmMonth,
+      kmYear
+    };
   });
+
+  let unitCosts = $derived.by(() =>
+    calcularCostosUnitarios({
+      config: costConfig,
+      maint,
+      garrafonesPeriodo: stats.monthTotal || stats.weekTotal || 1,
+      kmPeriodo: stats.kmMonth || stats.kmWeek || 0
+    })
+  );
+
+  let availableMonths = $derived.by(() => {
+    const keys = new Set<string>(Object.keys(reportDoc.months || {}));
+    keys.add(selectedMonthKey);
+    return Array.from(keys).sort().reverse();
+  });
+
+  let availableYears = $derived.by(() => {
+    const years = new Set<string>([selectedYearKey]);
+    for (const k of Object.keys(reportDoc.months || {})) {
+      const y = k.split('-')[0];
+      if (y) years.add(y);
+    }
+    return Array.from(years).sort().reverse();
+  });
+
+  let monthlyReport = $derived.by(() =>
+    construirInformeMensual(
+      selectedMonthKey,
+      reportDoc.months?.[selectedMonthKey],
+      costConfig
+    )
+  );
+
+  let annualReport = $derived.by(() => {
+    const entries = Object.entries(reportDoc.months || {})
+      .filter(([k]) => k.startsWith(`${selectedYearKey}-`))
+      .map(([k, v]) => construirInformeMensual(k, v, costConfig));
+
+    const garrafonesVendidos = entries.reduce((acc, e) => acc + e.garrafonesVendidos, 0);
+    const kmRecorridos = entries.reduce((acc, e) => acc + e.kmRecorridos, 0);
+    const juegosFiltrosUsados = entries.reduce((acc, e) => acc + e.juegosFiltrosUsados, 0);
+    const piezasFiltrosUsadas =
+      juegosFiltrosUsados * (Number(costConfig.filtrosPorJuego) || 3);
+
+    const osmosisFechasSet = new Set<string>();
+    for (const e of entries) {
+      for (const f of e.cambiosOsmosisFechas || []) {
+        if (f) osmosisFechasSet.add(f);
+      }
+    }
+    for (const item of reportDoc.osmosisDatesAllTime || []) {
+      if (item.date?.startsWith(`${selectedYearKey}-`)) {
+        osmosisFechasSet.add(item.date);
+      }
+    }
+
+    const ingresosEstimados = entries.reduce((acc, e) => acc + e.ingresosEstimados, 0);
+    const costoInsumosDirectos = entries.reduce((acc, e) => acc + e.costoInsumosDirectos, 0);
+    const costoGasolina = entries.reduce((acc, e) => acc + e.costoGasolina, 0);
+    const costoFiltros = entries.reduce((acc, e) => acc + e.costoFiltros, 0);
+    const costoOsmosis = entries.reduce((acc, e) => acc + e.costoOsmosis, 0);
+    const costoFijosProrrateados = entries.reduce((acc, e) => acc + e.costoFijosProrrateados, 0);
+    const costoTotal = entries.reduce((acc, e) => acc + e.costoTotal, 0);
+    const utilidadNeta = entries.reduce((acc, e) => acc + e.utilidadNeta, 0);
+
+    return {
+      yearKey: selectedYearKey,
+      mesesRegistrados: entries.length,
+      garrafonesVendidos,
+      kmRecorridos,
+      juegosFiltrosUsados,
+      piezasFiltrosUsadas,
+      cambiosOsmosisFechas: Array.from(osmosisFechasSet).sort(),
+      ingresosEstimados,
+      costoInsumosDirectos,
+      costoGasolina,
+      costoFiltros,
+      costoOsmosis,
+      costoFijosProrrateados,
+      costoTotal,
+      utilidadNeta
+    };
+  });
+
+  function downloadReportFile() {
+    const lines: string[] = [];
+    if (reportMode === 'mensual') {
+      const r = monthlyReport;
+      lines.push(`INFORME MENSUAL PURIFICADORA (${r.monthKey})`);
+      lines.push('----------------------------------------');
+      lines.push(`Garrafones vendidos: ${r.garrafonesVendidos}`);
+      lines.push(`Kilómetros recorridos: ${r.kmRecorridos.toFixed(1)} km`);
+      lines.push(`Juegos de filtros usados (3 filtros c/u): ${r.juegosFiltrosUsados}`);
+      lines.push(
+        `Fechas cambio ósmosis: ${
+          r.cambiosOsmosisFechas.length > 0 ? r.cambiosOsmosisFechas.join(', ') : 'Ninguno en el mes'
+        }`
+      );
+      lines.push(`Ingresos estimados: ${formatMoney(r.ingresosEstimados)}`);
+      lines.push(`Insumos directos (tapa/sello/jabón): ${formatMoney(r.costoInsumosDirectos)}`);
+      lines.push(`Gasolina: ${formatMoney(r.costoGasolina)}`);
+      lines.push(`Filtros: ${formatMoney(r.costoFiltros)}`);
+      lines.push(`Ósmosis: ${formatMoney(r.costoOsmosis)}`);
+      lines.push(`Fijos (luz/agua/tinacos): ${formatMoney(r.costoFijosProrrateados)}`);
+      lines.push(`Costo total: ${formatMoney(r.costoTotal)}`);
+      lines.push(`Utilidad neta estimada: ${formatMoney(r.utilidadNeta)}`);
+    } else {
+      const r = annualReport;
+      lines.push(`INFORME ANUAL PURIFICADORA (${r.yearKey})`);
+      lines.push('---------------------------------------');
+      lines.push(`Garrafones vendidos: ${r.garrafonesVendidos}`);
+      lines.push(`Kilómetros recorridos: ${r.kmRecorridos.toFixed(1)} km`);
+      lines.push(
+        `Juegos de filtros usados: ${r.juegosFiltrosUsados} (${r.piezasFiltrosUsadas} filtros individuales)`
+      );
+      lines.push(
+        `Fechas cambio ósmosis: ${
+          r.cambiosOsmosisFechas.length > 0 ? r.cambiosOsmosisFechas.join(', ') : 'Ninguno en el año'
+        }`
+      );
+      lines.push(`Ingresos estimados: ${formatMoney(r.ingresosEstimados)}`);
+      lines.push(`Insumos directos (tapa/sello/jabón): ${formatMoney(r.costoInsumosDirectos)}`);
+      lines.push(`Gasolina: ${formatMoney(r.costoGasolina)}`);
+      lines.push(`Filtros: ${formatMoney(r.costoFiltros)}`);
+      lines.push(`Ósmosis: ${formatMoney(r.costoOsmosis)}`);
+      lines.push(`Fijos (luz/agua/tinacos): ${formatMoney(r.costoFijosProrrateados)}`);
+      lines.push(`Costo total: ${formatMoney(r.costoTotal)}`);
+      lines.push(`Utilidad neta estimada: ${formatMoney(r.utilidadNeta)}`);
+    }
+
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download =
+      reportMode === 'mensual'
+        ? `informe-purificadora-${monthlyReport.monthKey}.txt`
+        : `informe-anual-purificadora-${annualReport.yearKey}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 </script>
 
 <div class="space-y-6">
   <!-- Cabecera -->
-  <div class="bg-slate-800/60 p-4 rounded-xl border border-slate-700 text-center sm:text-left">
-    <h2 class="text-xl font-bold text-cyan-300">⚙️ Mantenimiento de Equipos & Contabilidad</h2>
-    <p class="text-xs text-slate-400">Supervisa el estado de tus sistemas de purificación y el balance de ventas de garrafones.</p>
+  <div class="flex flex-col sm:flex-row justify-between items-center text-center sm:text-left gap-4 bg-slate-800/60 p-4 rounded-xl border border-slate-700">
+    <div>
+      <h2 class="text-xl font-bold text-cyan-300">⚙️ Mantenimiento de Equipos & Contabilidad</h2>
+      <p class="text-xs text-slate-400">Supervisa tus sistemas de purificación, costos reales por garrafón e informes.</p>
+    </div>
+    <button
+      type="button"
+      onclick={() => (showCostEditor = !showCostEditor)}
+      class="w-full sm:w-auto bg-slate-900 hover:bg-slate-950 text-cyan-300 border border-cyan-700/60 font-bold px-4 py-2.5 rounded-lg text-xs transition-colors cursor-pointer"
+    >
+      {showCostEditor ? '✖ Cerrar Tarifas' : '💲 Configurar Costos y Tarifas'}
+    </button>
   </div>
+
+  <!-- Editor de Parámetros de Costos -->
+  {#if showCostEditor}
+    <div class="bg-slate-900/90 border border-cyan-800/60 rounded-xl p-5 space-y-4 shadow-xl">
+      <div>
+        <h3 class="font-bold text-cyan-300 text-base">💲 Parámetros Base de Producción y Reparto</h3>
+        <p class="text-xs text-slate-400">Ajusta precios unitarios o rendimientos cuando cambien tus insumos.</p>
+      </div>
+
+      <form onsubmit={saveCostConfig} class="space-y-4 text-xs">
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div class="bg-slate-950 p-3 rounded-lg border border-slate-800 space-y-1">
+            <label class="block text-slate-400 font-semibold">Precio Promedio Garrafón ($)</label>
+            <input type="number" step="0.01" min="0" bind:value={costConfig.precioGarrafon} disabled={savingCosts} class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-slate-100" />
+          </div>
+          <div class="bg-slate-950 p-3 rounded-lg border border-slate-800 space-y-1">
+            <label class="block text-slate-400 font-semibold">Tapa con Liner c/u ($)</label>
+            <input type="number" step="0.01" min="0" bind:value={costConfig.costoTapa} disabled={savingCosts} class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-slate-100" />
+          </div>
+          <div class="bg-slate-950 p-3 rounded-lg border border-slate-800 space-y-1">
+            <label class="block text-slate-400 font-semibold">Sello Termoencogible c/u ($)</label>
+            <input type="number" step="0.01" min="0" bind:value={costConfig.costoSello} disabled={savingCosts} class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-slate-100" />
+          </div>
+          <div class="bg-slate-950 p-3 rounded-lg border border-slate-800 space-y-1">
+            <label class="block text-slate-400 font-semibold">Jabón y Cloro / Garrafón ($)</label>
+            <input type="number" step="0.01" min="0" bind:value={costConfig.costoJabonCloro} disabled={savingCosts} class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-slate-100" />
+          </div>
+          <div class="bg-slate-950 p-3 rounded-lg border border-slate-800 space-y-1">
+            <label class="block text-slate-400 font-semibold">Rendimiento Carro (km/L)</label>
+            <input type="number" step="0.1" min="1" bind:value={costConfig.rendimientoKmPorLitro} disabled={savingCosts} class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-slate-100" />
+          </div>
+          <div class="bg-slate-950 p-3 rounded-lg border border-slate-800 space-y-1">
+            <label class="block text-slate-400 font-semibold">Precio Gasolina / Litro ($)</label>
+            <input type="number" step="0.01" min="0" bind:value={costConfig.precioGasolinaLitro} disabled={savingCosts} class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-slate-100" />
+          </div>
+          <div class="bg-slate-950 p-3 rounded-lg border border-slate-800 space-y-1">
+            <label class="block text-slate-400 font-semibold">Juego de 3 Filtros ($)</label>
+            <input type="number" step="0.01" min="0" bind:value={costConfig.costoJuegoFiltros} disabled={savingCosts} class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-slate-100" />
+          </div>
+          <div class="bg-slate-950 p-3 rounded-lg border border-slate-800 space-y-1">
+            <label class="block text-slate-400 font-semibold">Membrana Ósmosis c/u ($)</label>
+            <input type="number" step="0.01" min="0" bind:value={costConfig.costoMembranaUnitaria} disabled={savingCosts} class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-slate-100" />
+          </div>
+          <div class="bg-slate-950 p-3 rounded-lg border border-slate-800 space-y-1">
+            <label class="block text-slate-400 font-semibold">Cantidad de Membranas</label>
+            <input type="number" min="1" bind:value={costConfig.cantidadMembranas} disabled={savingCosts} class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-slate-100" />
+          </div>
+        </div>
+
+        <div class="flex justify-end">
+          <button
+            type="submit"
+            disabled={savingCosts}
+            class="bg-cyan-500 hover:bg-cyan-600 disabled:opacity-50 text-slate-950 font-bold px-5 py-2 rounded-lg cursor-pointer"
+          >
+            {savingCosts ? 'Guardando...' : 'Guardar Tarifas'}
+          </button>
+        </div>
+      </form>
+    </div>
+  {/if}
 
   {#if loading}
     <div class="text-center py-12 text-slate-400 animate-pulse">Cargando registros...</div>
@@ -188,7 +565,7 @@
         <div class="bg-slate-800/80 border border-slate-700 p-4 rounded-xl text-center space-y-1 shadow-md min-w-0">
           <span class="text-xs text-slate-400 uppercase font-semibold">Semana Actual</span>
           <div class="text-3xl font-black text-cyan-400">{stats.weekTotal}</div>
-          <span class="text-[11px] text-slate-500 block">Garrafones Vendidos</span>
+          <span class="text-[11px] text-slate-500 block">Garrafones Vendidos · {stats.kmWeek.toFixed(1)} km</span>
           <div class="pt-1 border-t border-slate-700/70 text-[11px] text-slate-400">
             Semana anterior: <strong class="text-slate-200">{stats.weekPrev}</strong>
           </div>
@@ -197,7 +574,7 @@
         <div class="bg-slate-800/80 border border-slate-700 p-4 rounded-xl text-center space-y-1 shadow-md min-w-0">
           <span class="text-xs text-slate-400 uppercase font-semibold">Mes Actual</span>
           <div class="text-3xl font-black text-cyan-300">{stats.monthTotal}</div>
-          <span class="text-[11px] text-slate-500 block">Garrafones Vendidos</span>
+          <span class="text-[11px] text-slate-500 block">Garrafones Vendidos · {stats.kmMonth.toFixed(1)} km</span>
           <div class="pt-1 border-t border-slate-700/70 text-[11px] text-slate-400">
             Mes anterior: <strong class="text-slate-200">{stats.monthPrev}</strong>
           </div>
@@ -206,7 +583,7 @@
         <div class="bg-slate-800/80 border border-slate-700 p-4 rounded-xl text-center space-y-1 shadow-md min-w-0">
           <span class="text-xs text-slate-400 uppercase font-semibold">Año Actual</span>
           <div class="text-3xl font-black text-emerald-400">{stats.yearTotal}</div>
-          <span class="text-[11px] text-slate-500 block">Garrafones Vendidos</span>
+          <span class="text-[11px] text-slate-500 block">Garrafones Vendidos · {stats.kmYear.toFixed(1)} km</span>
           <div class="pt-1 border-t border-slate-700/70 text-[11px] text-slate-400">
             Año anterior: <strong class="text-slate-200">{stats.yearPrev}</strong>
           </div>
@@ -214,11 +591,43 @@
       </div>
     </div>
 
-    <!-- SECCIÓN 2: MANTENIMIENTO DE EQUIPOS -->
+    <!-- SECCIÓN 2: COSTO REAL POR GARRAFÓN Y RENTABILIDAD -->
+    <div class="bg-slate-800/70 border border-cyan-800/40 rounded-xl p-5 space-y-4">
+      <div class="flex flex-col sm:flex-row justify-between items-center gap-2 text-center sm:text-left">
+        <div>
+          <h3 class="font-bold text-cyan-300 text-base">🧮 Costo Real de Producción y Reparto por Garrafón</h3>
+          <p class="text-xs text-slate-400">Precio promedio de venta: <strong class="text-slate-200">{formatMoney(costConfig.precioGarrafon)}</strong> · Ciclo filtros: <strong class="text-cyan-300">{maint.garrafonesDesdeFiltros}</strong> garrafones · Ciclo ósmosis: <strong class="text-cyan-300">{maint.garrafonesDesdeMembrana}</strong> garrafones</p>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+        <div class="bg-slate-900/90 border border-slate-700 p-3 rounded-lg">
+          <span class="text-slate-400 block">Costo Real / Garrafón</span>
+          <strong class="text-amber-300 text-lg font-black">{formatMoney(unitCosts.costoUnitarioReal)}</strong>
+        </div>
+        <div class="bg-slate-900/90 border border-slate-700 p-3 rounded-lg">
+          <span class="text-slate-400 block">Utilidad Neta / Garrafón</span>
+          <strong class="text-emerald-400 text-lg font-black">{formatMoney(unitCosts.utilidadUnitaria)}</strong>
+        </div>
+        <div class="bg-slate-900/90 border border-slate-700 p-3 rounded-lg">
+          <span class="text-slate-400 block">Tapa + Sello + Jabón</span>
+          <strong class="text-slate-200 text-base font-bold">{formatMoney(unitCosts.insumosPorGarrafon)}</strong>
+          <span class="text-[10px] text-slate-500 block">({formatMoney(costConfig.costoTapa)} + {formatMoney(costConfig.costoSello)} + {formatMoney(costConfig.costoJabonCloro)})</span>
+        </div>
+        <div class="bg-slate-900/90 border border-slate-700 p-3 rounded-lg">
+          <span class="text-slate-400 block">Gasolina / Filtros / Ósmosis</span>
+          <strong class="text-cyan-300 text-xs font-bold block mt-0.5">
+            ⛽ {formatMoney(unitCosts.gasolinaPorGarrafon)} · 🧪 {formatMoney(unitCosts.filtrosPorGarrafon)} · 💧 {formatMoney(unitCosts.osmosisPorGarrafon)}
+          </strong>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECCIÓN 3: MANTENIMIENTO DE EQUIPOS -->
     <div class="bg-slate-800/60 border border-slate-700 rounded-xl p-5 space-y-4 min-w-0 overflow-hidden">
       <div class="text-center sm:text-left">
         <h3 class="font-bold text-cyan-300 text-base">🛠️ Mantenimiento de Sistemas de Purificación</h3>
-        <p class="text-xs text-slate-400">Actualiza las fechas de servicio. El registro aplica de forma general para tus equipos.</p>
+        <p class="text-xs text-slate-400">Al cambiar la fecha de filtros o membranas y guardar, se actualiza el ciclo y se registra en tu informe.</p>
       </div>
 
       <form onsubmit={saveMaintenance} class="space-y-4 text-sm min-w-0">
@@ -231,11 +640,13 @@
           <div class="bg-slate-900/80 p-3 rounded-lg border border-slate-700 space-y-2 min-w-0 overflow-hidden">
             <label class="block text-xs font-bold text-slate-300">🔄 Último Cambio de Filtros</label>
             <input type="date" bind:value={maint.lastFiltros} disabled={saving} class="w-full min-w-0 max-w-full box-border bg-slate-950 border border-slate-700 rounded-lg p-2 text-slate-100 text-xs focus:border-cyan-400 focus:outline-none" />
+            <span class="text-[11px] text-slate-400 block">Juegos ocupados acumulados: <strong class="text-cyan-300">{maint.juegosFiltrosUsadosTotal}</strong></span>
           </div>
 
           <div class="bg-slate-900/80 p-3 rounded-lg border border-slate-700 space-y-2 min-w-0 overflow-hidden">
             <label class="block text-xs font-bold text-slate-300">💧 Membrana Ósmosis Inversa</label>
             <input type="date" bind:value={maint.lastMembrana} disabled={saving} class="w-full min-w-0 max-w-full box-border bg-slate-950 border border-slate-700 rounded-lg p-2 text-slate-100 text-xs focus:border-cyan-400 focus:outline-none" />
+            <span class="text-[11px] text-slate-400 block">Cambios registrados: <strong class="text-emerald-300">{maint.cambiosOsmosisHistorial.length}</strong></span>
           </div>
         </div>
 
@@ -249,6 +660,103 @@
           </button>
         </div>
       </form>
+    </div>
+
+    <!-- SECCIÓN 4: INFORME MENSUAL Y ANUAL -->
+    <div class="bg-slate-800/70 border border-slate-700 rounded-xl p-5 space-y-4">
+      <div class="flex flex-col sm:flex-row justify-between items-center gap-3">
+        <div class="text-center sm:text-left">
+          <h3 class="font-bold text-cyan-300 text-base">📑 Informes Mensual y Anual</h3>
+          <p class="text-xs text-slate-400">Consulta o descarga el resumen con fechas de cambio de ósmosis y total de filtros usados.</p>
+        </div>
+
+        <div class="flex flex-wrap items-center justify-center gap-2 text-xs">
+          <button
+            type="button"
+            onclick={() => (reportMode = 'mensual')}
+            class="px-3 py-1.5 rounded-lg font-bold border cursor-pointer {reportMode === 'mensual'
+              ? 'bg-cyan-500 text-slate-950 border-cyan-400'
+              : 'bg-slate-900 text-slate-300 border-slate-700'}"
+          >
+            Mensual
+          </button>
+          <button
+            type="button"
+            onclick={() => (reportMode = 'anual')}
+            class="px-3 py-1.5 rounded-lg font-bold border cursor-pointer {reportMode === 'anual'
+              ? 'bg-cyan-500 text-slate-950 border-cyan-400'
+              : 'bg-slate-900 text-slate-300 border-slate-700'}"
+          >
+            Anual
+          </button>
+
+          {#if reportMode === 'mensual'}
+            <select bind:value={selectedMonthKey} class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-100">
+              {#each availableMonths as mKey}
+                <option value={mKey}>{mKey}</option>
+              {/each}
+            </select>
+          {:else}
+            <select bind:value={selectedYearKey} class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-100">
+              {#each availableYears as yKey}
+                <option value={yKey}>{yKey}</option>
+              {/each}
+            </select>
+          {/if}
+
+          <button
+            type="button"
+            onclick={downloadReportFile}
+            class="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3.5 py-1.5 rounded-lg cursor-pointer"
+          >
+            ⬇️ Descargar Informe
+          </button>
+        </div>
+      </div>
+
+      {#if reportMode === 'mensual'}
+        <div class="bg-slate-900/90 border border-slate-700/80 rounded-xl p-4 space-y-3 text-xs">
+          <div class="flex flex-wrap justify-between items-center gap-2 border-b border-slate-800 pb-2">
+            <strong class="text-cyan-300 text-sm">Resumen Mensual: {monthlyReport.monthKey}</strong>
+            <span class="text-emerald-400 font-bold">Utilidad neta: {formatMoney(monthlyReport.utilidadNeta)}</span>
+          </div>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div><span class="text-slate-400 block">Garrafones:</span><strong class="text-slate-100">{monthlyReport.garrafonesVendidos}</strong></div>
+            <div><span class="text-slate-400 block">Km recorridos:</span><strong class="text-slate-100">{monthlyReport.kmRecorridos.toFixed(1)} km</strong></div>
+            <div><span class="text-slate-400 block">Juegos filtros usados:</span><strong class="text-cyan-300">{monthlyReport.juegosFiltrosUsados}</strong></div>
+            <div><span class="text-slate-400 block">Ingresos / Costos:</span><strong class="text-slate-100">{formatMoney(monthlyReport.ingresosEstimados)} / {formatMoney(monthlyReport.costoTotal)}</strong></div>
+          </div>
+          <div class="pt-2 border-t border-slate-800 text-slate-300">
+            <span class="text-slate-400">Fechas de cambio de ósmosis en el mes:</span>
+            <strong class="text-emerald-300 ml-1">
+              {monthlyReport.cambiosOsmosisFechas.length > 0
+                ? monthlyReport.cambiosOsmosisFechas.join(', ')
+                : 'Sin cambios registrados'}
+            </strong>
+          </div>
+        </div>
+      {:else}
+        <div class="bg-slate-900/90 border border-slate-700/80 rounded-xl p-4 space-y-3 text-xs">
+          <div class="flex flex-wrap justify-between items-center gap-2 border-b border-slate-800 pb-2">
+            <strong class="text-cyan-300 text-sm">Resumen Anual: {annualReport.yearKey}</strong>
+            <span class="text-emerald-400 font-bold">Utilidad neta anual: {formatMoney(annualReport.utilidadNeta)}</span>
+          </div>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div><span class="text-slate-400 block">Garrafones año:</span><strong class="text-slate-100">{annualReport.garrafonesVendidos}</strong></div>
+            <div><span class="text-slate-400 block">Km recorridos año:</span><strong class="text-slate-100">{annualReport.kmRecorridos.toFixed(1)} km</strong></div>
+            <div><span class="text-slate-400 block">Filtros usados (juegos):</span><strong class="text-cyan-300">{annualReport.juegosFiltrosUsados} ({annualReport.piezasFiltrosUsadas} filtros)</strong></div>
+            <div><span class="text-slate-400 block">Ingresos / Costos:</span><strong class="text-slate-100">{formatMoney(annualReport.ingresosEstimados)} / {formatMoney(annualReport.costoTotal)}</strong></div>
+          </div>
+          <div class="pt-2 border-t border-slate-800 text-slate-300">
+            <span class="text-slate-400">Fechas de cambio de membranas de ósmosis en {annualReport.yearKey}:</span>
+            <strong class="text-emerald-300 ml-1">
+              {annualReport.cambiosOsmosisFechas.length > 0
+                ? annualReport.cambiosOsmosisFechas.join(', ')
+                : 'Sin cambios registrados'}
+            </strong>
+          </div>
+        </div>
+      {/if}
     </div>
   {/if}
 </div>

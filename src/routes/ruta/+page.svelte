@@ -1,7 +1,27 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { db } from '$lib/firebase';
-  import { collection, getDocs, getDoc, setDoc, deleteDoc, doc, updateDoc, addDoc, serverTimestamp } from 'firebase/firestore';
+  import {
+    collection,
+    getDocs,
+    getDoc,
+    setDoc,
+    deleteDoc,
+    doc,
+    updateDoc,
+    addDoc,
+    serverTimestamp
+  } from 'firebase/firestore';
+  import {
+    DEFAULT_COST_CONFIG,
+    DEFAULT_MAINTENANCE_STATE,
+    construirInformeMensual
+  } from '$lib/utils/contabilidad';
+  import type {
+    AccountingReportDoc,
+    CostConfig,
+    MaintenanceState
+  } from '$lib/types/purificadora';
 
   interface Client {
     id: string;
@@ -44,8 +64,8 @@
   // Estados para el Modal de "Doble Check" de Entrega y Envases Rotos
   let showDeliverModal = $state(false);
   let orderToDeliver = $state<Order | null>(null);
-  let emptyReturned = $state(0); // Buenos devueltos
-  let brokenReturned = $state(0); // Rotos devueltos en la misma visita
+  let emptyReturned = $state(0);
+  let brokenReturned = $state(0);
   let delivering = $state(false);
   let creatingOrder = $state(false);
 
@@ -68,11 +88,10 @@
     }
   }
 
-  // Clave del lunes de la semana actual en hora local (YYYY-MM-DD)
   function getWeekMondayKey(date: Date): string {
     const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
     const day = d.getDay();
-    const diff = day === 0 ? -6 : 1 - day; // Lunes como inicio de semana
+    const diff = day === 0 ? -6 : 1 - day;
     d.setDate(d.getDate() + diff);
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -102,9 +121,9 @@
     return `${date.getFullYear() - 1}`;
   }
 
-  // Actualiza el documento único stats/ventas sin acumular registros históricos
-  async function updateSalesCounter(garafonesSold: number) {
-    const safeSold = Number(garafonesSold) || 0;
+  async function updateSalesAndAccounting(garafonesSold: number, kmDelta: number) {
+    const safeSold = Math.max(0, Number(garafonesSold) || 0);
+    const safeKm = Math.max(0, Number(kmDelta) || 0);
     const now = new Date();
     const curWeek = getWeekMondayKey(now);
     const prevWeek = getPrevWeekMondayKey(now);
@@ -119,61 +138,149 @@
 
     let semanaActual = Number(data.semanaActual) || 0;
     let semanaAnterior = Number(data.semanaAnterior) || 0;
+    let kmSemanaActual = Number(data.kmSemanaActual) || 0;
+    let kmSemanaAnterior = Number(data.kmSemanaAnterior) || 0;
     const savedWeek = data.weekKey || '';
 
     if (savedWeek === curWeek) {
       semanaActual += safeSold;
+      kmSemanaActual += safeKm;
     } else if (savedWeek === prevWeek) {
       semanaAnterior = semanaActual;
       semanaActual = safeSold;
+      kmSemanaAnterior = kmSemanaActual;
+      kmSemanaActual = safeKm;
     } else {
       semanaAnterior = 0;
       semanaActual = safeSold;
+      kmSemanaAnterior = 0;
+      kmSemanaActual = safeKm;
     }
 
     let mesActual = Number(data.mesActual) || 0;
     let mesAnterior = Number(data.mesAnterior) || 0;
+    let kmMesActual = Number(data.kmMesActual) || 0;
+    let kmMesAnterior = Number(data.kmMesAnterior) || 0;
     const savedMonth = data.monthKey || '';
 
     if (savedMonth === curMonth) {
       mesActual += safeSold;
+      kmMesActual += safeKm;
     } else if (savedMonth === prevMonth) {
       mesAnterior = mesActual;
       mesActual = safeSold;
+      kmMesAnterior = kmMesActual;
+      kmMesActual = safeKm;
     } else {
       mesAnterior = 0;
       mesActual = safeSold;
+      kmMesAnterior = 0;
+      kmMesActual = safeKm;
     }
 
     let anioActual = Number(data.anioActual) || 0;
     let anioAnterior = Number(data.anioAnterior) || 0;
+    let kmAnioActual = Number(data.kmAnioActual) || 0;
+    let kmAnioAnterior = Number(data.kmAnioAnterior) || 0;
     const savedYear = data.yearKey || '';
 
     if (savedYear === curYear) {
       anioActual += safeSold;
+      kmAnioActual += safeKm;
     } else if (savedYear === prevYear) {
       anioAnterior = anioActual;
       anioActual = safeSold;
+      kmAnioAnterior = kmAnioActual;
+      kmAnioActual = safeKm;
     } else {
       anioAnterior = 0;
       anioActual = safeSold;
+      kmAnioAnterior = 0;
+      kmAnioActual = safeKm;
     }
 
-    await setDoc(
-      statsRef,
+    const [maintSnap, costsSnap, reportSnap] = await Promise.all([
+      getDoc(doc(db, 'config', 'maintenance')),
+      getDoc(doc(db, 'config', 'costs')),
+      getDoc(doc(db, 'stats', 'reportes'))
+    ]);
+
+    const currentMaint: MaintenanceState = maintSnap.exists()
+      ? { ...DEFAULT_MAINTENANCE_STATE, ...(maintSnap.data() as Partial<MaintenanceState>) }
+      : { ...DEFAULT_MAINTENANCE_STATE };
+
+    const currentCostCfg: CostConfig = costsSnap.exists()
+      ? { ...DEFAULT_COST_CONFIG, ...(costsSnap.data() as Partial<CostConfig>) }
+      : { ...DEFAULT_COST_CONFIG };
+
+    const currentReport: AccountingReportDoc = reportSnap.exists()
+      ? {
+          months: (reportSnap.data() as Partial<AccountingReportDoc>).months || {},
+          osmosisDatesAllTime:
+            (reportSnap.data() as Partial<AccountingReportDoc>).osmosisDatesAllTime || [],
+          totalFiltrosAllTime:
+            Number((reportSnap.data() as Partial<AccountingReportDoc>).totalFiltrosAllTime) || 0
+        }
+      : { months: {}, osmosisDatesAllTime: [], totalFiltrosAllTime: 0 };
+
+    const updatedMaint: MaintenanceState = {
+      ...currentMaint,
+      garrafonesDesdeFiltros: (Number(currentMaint.garrafonesDesdeFiltros) || 0) + safeSold,
+      garrafonesDesdeMembrana: (Number(currentMaint.garrafonesDesdeMembrana) || 0) + safeSold
+    };
+
+    const monthsMap = { ...(currentReport.months || {}) };
+    const prevMonthLedger = construirInformeMensual(curMonth, monthsMap[curMonth], currentCostCfg);
+    monthsMap[curMonth] = construirInformeMensual(
+      curMonth,
       {
-        semanaActual,
-        semanaAnterior,
-        weekKey: curWeek,
-        mesActual,
-        mesAnterior,
-        monthKey: curMonth,
-        anioActual,
-        anioAnterior,
-        yearKey: curYear
+        ...prevMonthLedger,
+        garrafonesVendidos: prevMonthLedger.garrafonesVendidos + safeSold,
+        kmRecorridos: prevMonthLedger.kmRecorridos + safeKm
       },
-      { merge: true }
+      currentCostCfg
     );
+
+    await Promise.all([
+      setDoc(
+        statsRef,
+        {
+          semanaActual,
+          semanaAnterior,
+          weekKey: curWeek,
+          mesActual,
+          mesAnterior,
+          monthKey: curMonth,
+          anioActual,
+          anioAnterior,
+          yearKey: curYear,
+          kmSemanaActual,
+          kmSemanaAnterior,
+          kmMesActual,
+          kmMesAnterior,
+          kmAnioActual,
+          kmAnioAnterior
+        },
+        { merge: true }
+      ),
+      setDoc(
+        doc(db, 'config', 'maintenance'),
+        {
+          garrafonesDesdeFiltros: updatedMaint.garrafonesDesdeFiltros,
+          garrafonesDesdeMembrana: updatedMaint.garrafonesDesdeMembrana
+        },
+        { merge: true }
+      ),
+      setDoc(
+        doc(db, 'stats', 'reportes'),
+        {
+          months: monthsMap,
+          osmosisDatesAllTime: currentReport.osmosisDatesAllTime,
+          totalFiltrosAllTime: currentReport.totalFiltrosAllTime
+        },
+        { merge: true }
+      )
+    ]);
   }
 
   async function handleCreateOrder(e: Event) {
@@ -208,7 +315,6 @@
     }
   }
 
-  // Obtener teléfono del pedido o del perfil del cliente
   function getOrderPhone(order: Order): string {
     if (order.clientPhone) return order.clientPhone;
     const found = clients.find(c => c.id === order.clientId);
@@ -223,7 +329,6 @@
     return null;
   }
 
-  // Distancia Manhattan en kilómetros (suma de catetos N-S + E-O)
   function manhattanKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
     const cosLat = Math.cos(((a.lat + b.lat) / 2) * (Math.PI / 180));
     const dLatKm = Math.abs(a.lat - b.lat) * 111.32;
@@ -254,7 +359,6 @@
       }
     }
 
-    // 1. Construcción inicial por Vecino Más Cercano (Manhattan)
     let route: { order: Order; coords: { lat: number; lng: number } }[] = [];
     let currentPos = BASE_COORDS;
     const remaining = [...withCoords];
@@ -276,7 +380,6 @@
       currentPos = picked.coords;
     }
 
-    // 2. Mejora 2-opt sobre el circuito cerrado (incluyendo regreso a BASE_COORDS)
     if (route.length >= 3) {
       let improved = true;
       let bestKm = calcClosedLoopKm(route);
@@ -320,16 +423,14 @@
     window.open(url, '_blank', 'noopener,noreferrer');
   }
 
-  // Paso 1: Abrir modal de Doble Check sugiriendo los envases
   function openDeliverModal(order: Order) {
     if (delivering) return;
     orderToDeliver = order;
-    emptyReturned = Number(order.garafones) || 0; // Sugiere por defecto los buenos entregados
-    brokenReturned = 0; // Por defecto 0 rotos
+    emptyReturned = Number(order.garafones) || 0;
+    brokenReturned = 0;
     showDeliverModal = true;
   }
 
-  // Paso 2: Confirmar entrega con control inteligente de buenos, rotos, frecuencia y contador de ventas
   async function confirmDelivery(e: Event) {
     e.preventDefault();
     if (!orderToDeliver || delivering) return;
@@ -339,15 +440,14 @@
     const soldQty = Number(currentOrder.garafones) || 0;
     const goodQty = Number(emptyReturned) || 0;
     const brokenQty = Number(brokenReturned) || 0;
+    const kmPerStop = stopsWithCoordsCount > 0 ? routeStats.km / stopsWithCoordsCount : 0;
 
     try {
       const now = new Date();
       const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
-      // 1. Actualizar contador único de ventas primero para no perder la venta si ocurre un corte de red
-      await updateSalesCounter(soldQty);
+      await updateSalesAndAccounting(soldQty, kmPerStop);
 
-      // 2. Actualizar cliente, historial (últimas 5), frecuencia, envases prestados y envases rotos
       const clientRef = doc(db, 'clients', currentOrder.clientId);
       const client = clients.find(c => c.id === currentOrder.clientId);
 
@@ -355,7 +455,6 @@
         let currentHistory = Array.isArray(client.history) ? [...client.history] : [];
         currentHistory = [todayStr, ...currentHistory].slice(0, 5);
 
-        // Recálculo automático de frecuencia
         let newFrecuencia = Number(client.frecuenciaDias) || 4;
         if (currentHistory.length >= 2) {
           let totalDaysDiff = 0;
@@ -370,12 +469,17 @@
           if (avgDays > 0) newFrecuencia = avgDays;
         }
 
-        // Recálculo automático de garrafones habituales por promedio (últimas 5 visitas)
-        let currentGarafonesHistory = Array.isArray(client.garrafonesHistory) ? [...client.garrafonesHistory] : [];
+        let currentGarafonesHistory = Array.isArray(client.garrafonesHistory)
+          ? [...client.garrafonesHistory]
+          : [];
         currentGarafonesHistory = [soldQty, ...currentGarafonesHistory].slice(0, 5);
-        const totalGarafonesSum = currentGarafonesHistory.reduce((acc, qty) => acc + (Number(qty) || 0), 0);
+        const totalGarafonesSum = currentGarafonesHistory.reduce(
+          (acc, qty) => acc + (Number(qty) || 0),
+          0
+        );
         const avgGarafones = Math.round(totalGarafonesSum / currentGarafonesHistory.length);
-        const newDefaultGarafones = avgGarafones > 0 ? avgGarafones : (Number(client.defaultGarafones) || 2);
+        const newDefaultGarafones =
+          avgGarafones > 0 ? avgGarafones : Number(client.defaultGarafones) || 2;
 
         const totalDevueltosEfectivos = goodQty + brokenQty;
         const currentPrestados = Number(client.prestados) || 0;
@@ -396,7 +500,6 @@
         });
       }
 
-      // 3. Eliminar pedido de orders una vez guardados ventas y cliente
       await deleteDoc(doc(db, 'orders', currentOrder.id));
 
       showDeliverModal = false;
@@ -404,7 +507,9 @@
       await fetchData();
     } catch (error: any) {
       console.error('Error al confirmar entrega:', error);
-      alert(`No se pudo completar la entrega (${error?.code || error?.message || 'error de red'}). Revisa tu conexión e intenta de nuevo.`);
+      alert(
+        `No se pudo completar la entrega (${error?.code || error?.message || 'error de red'}). Revisa tu conexión e intenta de nuevo.`
+      );
     } finally {
       delivering = false;
     }
@@ -419,14 +524,16 @@
   let routeStats = $derived.by(() => {
     const stops = orderedPendingOrders
       .map(o => ({ order: o, coords: getClientCoords(o) }))
-      .filter((item): item is { order: Order; coords: { lat: number; lng: number } } => item.coords !== null);
+      .filter(
+        (item): item is { order: Order; coords: { lat: number; lng: number } } =>
+          item.coords !== null
+      );
 
     if (stops.length === 0) {
       return { km: 0, minutes: 0 };
     }
 
     const km = calcClosedLoopKm(stops);
-    // Velocidad urbana estimada ~22 km/h + 3 min por parada de entrega
     const drivingMinutes = (km / 22) * 60;
     const stopMinutes = stops.length * 3;
     const minutes = Math.max(1, Math.round(drivingMinutes + stopMinutes));
