@@ -136,17 +136,12 @@
     }
   }
 
-  // Calcular días transcurridos y estado de días restantes
-  function getDeliveryStatus(client: Client) {
+  function getRemainingDays(client: Client): number | null {
     const lastDelivery = getEffectiveLastDelivery(client);
-    if (!lastDelivery) {
-      return { text: '✨ Nuevo / Sin entregas', class: 'bg-cyan-950/60 text-cyan-300 border-cyan-800' };
-    }
+    if (!lastDelivery) return null;
 
     const lastDate = new Date(lastDelivery + 'T00:00:00');
-    if (Number.isNaN(lastDate.getTime())) {
-      return { text: '✨ Nuevo / Sin entregas', class: 'bg-cyan-950/60 text-cyan-300 border-cyan-800' };
-    }
+    if (Number.isNaN(lastDate.getTime())) return null;
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -154,7 +149,15 @@
     const diffTime = today.getTime() - lastDate.getTime();
     const passedDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
     const freq = getEffectiveFrequency(client);
-    const remainingDays = freq - passedDays;
+    return freq - passedDays;
+  }
+
+  // Calcular días transcurridos y estado de días restantes
+  function getDeliveryStatus(client: Client) {
+    const remainingDays = getRemainingDays(client);
+    if (remainingDays === null) {
+      return { text: '✨ Nuevo / Sin entregas', class: 'bg-cyan-950/60 text-cyan-300 border-cyan-800' };
+    }
 
     if (remainingDays > 0) {
       return { text: `⏳ Quedan ${remainingDays} día(s)`, class: 'bg-slate-900 text-slate-300 border-slate-700' };
@@ -167,16 +170,9 @@
   }
 
   function needsWaterToday(client: Client): boolean {
-    const lastDelivery = getEffectiveLastDelivery(client);
-    if (!lastDelivery) return true;
-
-    const lastDate = new Date(lastDelivery + 'T00:00:00');
-    if (Number.isNaN(lastDate.getTime())) return true;
-
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const diffDays = Math.floor((today.getTime() - lastDate.getTime()) / (1000 * 60 * 60 * 24));
-    return diffDays >= getEffectiveFrequency(client);
+    const remainingDays = getRemainingDays(client);
+    if (remainingDays === null) return true;
+    return remainingDays <= 0;
   }
 
   function formatWhatsAppPhone(rawPhone: string): string {
@@ -205,7 +201,18 @@
     window.open(`https://api.whatsapp.com/send?phone=${phoneWithCode}&text=${message}`, '_blank', 'noopener,noreferrer');
   }
 
-  let suggestedClients = $derived(clients.filter(c => needsWaterToday(c)));
+  let suggestedClients = $derived(
+    clients
+      .filter(c => needsWaterToday(c))
+      .sort((a, b) => {
+        const remA = getRemainingDays(a);
+        const remB = getRemainingDays(b);
+        // Los nuevos (null) van después de los vencidos/hoy; entre fechas, los más atrasados primero
+        const scoreA = remA === null ? 1 : remA;
+        const scoreB = remB === null ? 1 : remB;
+        return scoreA - scoreB;
+      })
+  );
 </script>
 
 <div class="space-y-6">
@@ -244,10 +251,14 @@
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
         {#each suggestedClients as client}
           {@const lastDelivery = getEffectiveLastDelivery(client)}
+          {@const status = getDeliveryStatus(client)}
           <div class="bg-slate-900/90 border border-cyan-900/60 rounded-lg p-3 flex justify-between items-center gap-2 shadow-sm min-w-0">
-            <div class="min-w-0">
+            <div class="min-w-0 space-y-1.5">
               <h4 class="font-bold text-slate-100 text-sm truncate">{client.name}</h4>
               <p class="text-[11px] text-slate-400">Última entrega: {lastDelivery || 'Ninguna'} ({Number(client.defaultGarafones) || 2} garrafones)</p>
+              <span class="inline-block text-[11px] px-2.5 py-0.5 rounded-md border {status.class}">
+                {status.text}
+              </span>
             </div>
             {#if client.phone}
               <button 
@@ -255,7 +266,7 @@
                 onclick={() => openWhatsApp(client)}
                 class="shrink-0 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3 py-2 rounded-lg transition-colors flex items-center gap-1.5 shadow cursor-pointer"
               >
-                💬 WhatsApp 1 Clic
+                💬 Contactar
               </button>
             {:else}
               <span class="shrink-0 text-[10px] text-slate-500 italic">Sin teléfono</span>
@@ -268,7 +279,7 @@
 
   <!-- Listado General de Clientes -->
   <div class="space-y-3">
-    <h3 class="font-bold text-slate-200 text-sm">Directorio General de Clientes</h3>
+    <h3 class="font-bold text-slate-200 text-sm">Directorio General de Clientes ({clients.length})</h3>
     
     {#if loading}
       <div class="text-center py-12 text-slate-400 animate-pulse">Cargando base de datos de clientes...</div>
