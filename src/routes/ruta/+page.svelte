@@ -9,7 +9,6 @@
     deleteDoc,
     doc,
     updateDoc,
-    addDoc,
     serverTimestamp
   } from 'firebase/firestore';
   import {
@@ -283,6 +282,12 @@
     ]);
   }
 
+  function handleSelectClientChange() {
+    const client = clients.find(c => c.id === selectedClientId);
+    if (!client) return;
+    customGarafones = Number(client.defaultGarafones) || 2;
+  }
+
   async function handleCreateOrder(e: Event) {
     e.preventDefault();
     if (!selectedClientId || creatingOrder) return;
@@ -292,7 +297,25 @@
 
     creatingOrder = true;
     try {
-      await addDoc(collection(db, 'orders'), {
+      const orderRef = doc(db, 'orders', client.id);
+      const existingSnap = await getDoc(orderRef);
+
+      if (existingSnap.exists() && existingSnap.data()?.status === 'pendiente') {
+        const prevQty = Number(existingSnap.data()?.garafones) || 0;
+        const newQty = Number(customGarafones) || 1;
+        const ok = confirm(
+          `⚠️ ${client.name} ya tiene un pedido pendiente en la ruta por ${prevQty} garrafón(es) (lo acaba de registrar alguien del equipo).\n\nPresiona "Aceptar" para actualizarlo a ${newQty} garrafón(es) o "Cancelar" para dejar el que ya estaba.`
+        );
+        if (!ok) {
+          showNewOrderModal = false;
+          selectedClientId = '';
+          customGarafones = 2;
+          await fetchData();
+          return;
+        }
+      }
+
+      await setDoc(orderRef, {
         clientId: client.id,
         clientName: client.name,
         clientPhone: client.phone || '',
@@ -309,7 +332,9 @@
       await fetchData();
     } catch (error: any) {
       console.error('Error al crear pedido:', error);
-      alert(`No se pudo registrar el pedido (${error?.code || error?.message || 'error de red'}). Revisa tu conexión e intenta de nuevo.`);
+      alert(
+        `No se pudo registrar el pedido (${error?.code || error?.message || 'error de red'}). Revisa tu conexión e intenta de nuevo.`
+      );
     } finally {
       creatingOrder = false;
     }
@@ -516,6 +541,9 @@
   }
 
   let pendingOrders = $derived(orders.filter(o => o.status === 'pendiente'));
+  let availableClientsForOrder = $derived(
+    clients.filter(c => !pendingOrders.some(o => o.clientId === c.id))
+  );
   let orderedPendingOrders = $derived(getOptimalRouteOrders(pendingOrders));
   let stopsWithCoordsCount = $derived(
     orderedPendingOrders.filter(o => getClientCoords(o) !== null).length
@@ -761,18 +789,37 @@
 
         <form onsubmit={handleCreateOrder} class="space-y-4 text-sm">
           <div>
-            <label class="block text-xs text-slate-400 mb-1">Seleccionar Cliente</label>
-            <select bind:value={selectedClientId} required disabled={creatingOrder} class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none">
-              <option value="" disabled>-- Elige un cliente --</option>
-              {#each clients as client}
-                <option value={client.id}>{client.name} ({client.address || 'Sin dirección'})</option>
+            <label class="block text-xs text-slate-400 mb-1">Seleccionar Cliente (sin pedido activo)</label>
+            <select
+              bind:value={selectedClientId}
+              onchange={handleSelectClientChange}
+              required
+              disabled={creatingOrder || availableClientsForOrder.length === 0}
+              class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none"
+            >
+              <option value="" disabled>
+                {availableClientsForOrder.length === 0
+                  ? '-- Todos los clientes ya tienen pedido en ruta --'
+                  : '-- Elige un cliente --'}
+              </option>
+              {#each availableClientsForOrder as client}
+                <option value={client.id}>
+                  {client.name} ({client.address || 'Sin dirección'})
+                </option>
               {/each}
             </select>
           </div>
 
           <div>
             <label class="block text-xs text-slate-400 mb-1">Cantidad de Garrafones para este Pedido</label>
-            <input type="number" min="1" bind:value={customGarafones} required disabled={creatingOrder} class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none" />
+            <input
+              type="number"
+              min="1"
+              bind:value={customGarafones}
+              required
+              disabled={creatingOrder || availableClientsForOrder.length === 0}
+              class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none"
+            />
           </div>
 
           <div class="flex justify-end gap-3 pt-4 border-t border-slate-800">
@@ -784,7 +831,7 @@
             >Cancelar</button>
             <button
               type="submit"
-              disabled={creatingOrder}
+              disabled={creatingOrder || availableClientsForOrder.length === 0}
               class="px-5 py-2 bg-cyan-500 hover:bg-cyan-600 disabled:opacity-50 text-slate-950 font-bold rounded-lg shadow-md cursor-pointer"
             >{creatingOrder ? 'Añadiendo...' : 'Añadir a la Ruta'}</button>
           </div>

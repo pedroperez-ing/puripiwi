@@ -1,7 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { db } from '$lib/firebase';
-  import { collection, getDocs, addDoc, serverTimestamp } from 'firebase/firestore';
+  import {
+    collection,
+    getDocs,
+    getDoc,
+    setDoc,
+    doc,
+    addDoc,
+    serverTimestamp
+  } from 'firebase/firestore';
 
   interface Client {
     id: string;
@@ -19,10 +27,29 @@
     history?: string[];
   }
 
+  interface Order {
+    id: string;
+    clientId: string;
+    clientName: string;
+    clientPhone?: string;
+    address: string;
+    mapLink: string;
+    garafones: number;
+    status: 'pendiente' | 'entregado';
+    createdAt: any;
+  }
+
   let clients = $state<Client[]>([]);
+  let orders = $state<Order[]>([]);
   let loading = $state(true);
   let showModal = $state(false);
   let savingClient = $state(false);
+
+  // Estados para levantar pedido desde Mostrador o Sugeridos
+  let showNewOrderModal = $state(false);
+  let selectedOrderClientId = $state('');
+  let customOrderGarafones = $state(2);
+  let creatingOrder = $state(false);
 
   let newClient = $state({
     name: '',
@@ -72,17 +99,24 @@
   }
 
   onMount(async () => {
-    await fetchClients();
+    await fetchData();
   });
 
-  async function fetchClients() {
+  async function fetchData() {
     try {
       loading = true;
-      const querySnapshot = await getDocs(collection(db, 'clients'));
+      const [querySnapshot, orderSnap] = await Promise.all([
+        getDocs(collection(db, 'clients')),
+        getDocs(collection(db, 'orders'))
+      ]);
       clients = querySnapshot.docs.map(d => ({
         id: d.id,
         ...d.data()
       })) as Client[];
+      orders = orderSnap.docs.map(d => ({
+        id: d.id,
+        ...d.data()
+      })) as Order[];
     } catch (error) {
       console.error('Error al cargar clientes:', error);
     } finally {
@@ -127,12 +161,82 @@
         lastDelivery: ''
       };
       showModal = false;
-      await fetchClients();
+      await fetchData();
     } catch (error: any) {
       console.error('Error al guardar cliente:', error);
       alert(`No se pudo guardar el cliente (${error?.code || error?.message || 'error de red'}). Revisa tu conexión e intenta de nuevo.`);
     } finally {
       savingClient = false;
+    }
+  }
+
+  function openQuickOrderModal(client?: Client) {
+    if (creatingOrder) return;
+    if (client) {
+      selectedOrderClientId = client.id;
+      customOrderGarafones = Number(client.defaultGarafones) || 2;
+    } else {
+      selectedOrderClientId = '';
+      customOrderGarafones = 2;
+    }
+    showNewOrderModal = true;
+  }
+
+  function handleSelectOrderClientChange() {
+    const client = clients.find(c => c.id === selectedOrderClientId);
+    if (!client) return;
+    customOrderGarafones = Number(client.defaultGarafones) || 2;
+  }
+
+  async function handleCreateOrder(e: Event) {
+    e.preventDefault();
+    if (!selectedOrderClientId || creatingOrder) return;
+
+    const client = clients.find(c => c.id === selectedOrderClientId);
+    if (!client) return;
+
+    creatingOrder = true;
+    try {
+      const orderRef = doc(db, 'orders', client.id);
+      const existingSnap = await getDoc(orderRef);
+
+      if (existingSnap.exists() && existingSnap.data()?.status === 'pendiente') {
+        const prevQty = Number(existingSnap.data()?.garafones) || 0;
+        const newQty = Number(customOrderGarafones) || 1;
+        const ok = confirm(
+          `⚠️ ${client.name} ya tiene un pedido pendiente en la ruta por ${prevQty} garrafón(es) (lo acaba de registrar alguien del equipo).\n\nPresiona "Aceptar" para actualizarlo a ${newQty} garrafón(es) o "Cancelar" para dejar el que ya estaba.`
+        );
+        if (!ok) {
+          showNewOrderModal = false;
+          selectedOrderClientId = '';
+          customOrderGarafones = 2;
+          await fetchData();
+          return;
+        }
+      }
+
+      await setDoc(orderRef, {
+        clientId: client.id,
+        clientName: client.name,
+        clientPhone: client.phone || '',
+        address: client.address || 'Sin dirección',
+        mapLink: client.mapLink || '',
+        garafones: Number(customOrderGarafones) || 1,
+        status: 'pendiente',
+        createdAt: serverTimestamp()
+      });
+
+      showNewOrderModal = false;
+      selectedOrderClientId = '';
+      customOrderGarafones = 2;
+      await fetchData();
+    } catch (error: any) {
+      console.error('Error al crear pedido:', error);
+      alert(
+        `No se pudo registrar el pedido (${error?.code || error?.message || 'error de red'}). Revisa tu conexión e intenta de nuevo.`
+      );
+    } finally {
+      creatingOrder = false;
     }
   }
 
@@ -201,6 +305,14 @@
     window.open(`https://api.whatsapp.com/send?phone=${phoneWithCode}&text=${message}`, '_blank', 'noopener,noreferrer');
   }
 
+  let pendingClientIds = $derived(
+    new Set(orders.filter(o => o.status === 'pendiente').map(o => o.clientId))
+  );
+
+  let availableClientsForOrder = $derived(
+    clients.filter(c => !pendingClientIds.has(c.id))
+  );
+
   let suggestedClients = $derived(
     clients
       .filter(c => needsWaterToday(c))
@@ -222,14 +334,24 @@
       <h2 class="text-xl font-bold text-cyan-300">Control de Clientes & Mostrador</h2>
       <p class="text-xs text-slate-400">Gestión de perfiles, envases y alertas de frecuencia de compra.</p>
     </div>
-    <button 
-      type="button"
-      onclick={() => showModal = true}
-      disabled={savingClient}
-      class="w-full sm:w-auto bg-cyan-500 hover:bg-cyan-600 disabled:opacity-50 text-slate-950 font-bold px-4 py-2.5 rounded-lg text-sm transition-colors shadow-lg flex items-center justify-center gap-2 cursor-pointer"
-    >
-      ➕ Nuevo Cliente
-    </button>
+    <div class="w-full sm:w-auto flex flex-col sm:flex-row gap-2">
+      <button
+        type="button"
+        onclick={() => openQuickOrderModal()}
+        disabled={savingClient || creatingOrder}
+        class="w-full sm:w-auto bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-bold px-4 py-2.5 rounded-lg text-sm transition-colors shadow-lg flex items-center justify-center gap-2 cursor-pointer"
+      >
+        🚚 Agregar Pedido
+      </button>
+      <button 
+        type="button"
+        onclick={() => showModal = true}
+        disabled={savingClient || creatingOrder}
+        class="w-full sm:w-auto bg-cyan-500 hover:bg-cyan-600 disabled:opacity-50 text-slate-950 font-bold px-4 py-2.5 rounded-lg text-sm transition-colors shadow-lg flex items-center justify-center gap-2 cursor-pointer"
+      >
+        ➕ Nuevo Cliente
+      </button>
+    </div>
   </div>
 
   <!-- Sección de Alertas Inteligentes -->
@@ -252,7 +374,8 @@
         {#each suggestedClients as client}
           {@const lastDelivery = getEffectiveLastDelivery(client)}
           {@const status = getDeliveryStatus(client)}
-          <div class="bg-slate-900/90 border border-cyan-900/60 rounded-lg p-3 flex justify-between items-center gap-2 shadow-sm min-w-0">
+          {@const alreadyInRoute = pendingClientIds.has(client.id)}
+          <div class="bg-slate-900/90 border border-cyan-900/60 rounded-lg p-3 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 shadow-sm min-w-0">
             <div class="min-w-0 space-y-1.5">
               <h4 class="font-bold text-slate-100 text-sm truncate">{client.name}</h4>
               <p class="text-[11px] text-slate-400">Última entrega: {lastDelivery || 'Ninguna'} ({Number(client.defaultGarafones) || 2} garrafones)</p>
@@ -260,17 +383,35 @@
                 {status.text}
               </span>
             </div>
-            {#if client.phone}
-              <button 
-                type="button"
-                onclick={() => openWhatsApp(client)}
-                class="shrink-0 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3 py-2 rounded-lg transition-colors flex items-center gap-1.5 shadow cursor-pointer"
-              >
-                💬 Contactar
-              </button>
-            {:else}
-              <span class="shrink-0 text-[10px] text-slate-500 italic">Sin teléfono</span>
-            {/if}
+
+            <div class="w-full sm:w-auto flex items-center justify-end gap-2 shrink-0">
+              {#if alreadyInRoute}
+                <span class="text-[11px] bg-cyan-950/80 text-cyan-300 border border-cyan-700/60 px-2.5 py-1.5 rounded-lg font-bold">
+                  ✅ En ruta
+                </span>
+              {:else}
+                <button
+                  type="button"
+                  onclick={() => openQuickOrderModal(client)}
+                  disabled={creatingOrder}
+                  class="bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-xs font-bold px-3 py-2 rounded-lg transition-colors flex items-center gap-1 shadow cursor-pointer"
+                >
+                  🚚 Pedido
+                </button>
+              {/if}
+
+              {#if client.phone}
+                <button 
+                  type="button"
+                  onclick={() => openWhatsApp(client)}
+                  class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3 py-2 rounded-lg transition-colors flex items-center gap-1.5 shadow cursor-pointer"
+                >
+                  💬 Contactar
+                </button>
+              {:else}
+                <span class="text-[10px] text-slate-500 italic">Sin teléfono</span>
+              {/if}
+            </div>
           </div>
         {/each}
       </div>
@@ -347,6 +488,73 @@
       </div>
     {/if}
   </div>
+
+  <!-- Modal para Levantar Pedido Rápido a Ruta -->
+  {#if showNewOrderModal}
+    <div class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex justify-center items-center p-4 z-50">
+      <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md p-6 space-y-4 shadow-2xl">
+        <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+          <h3 class="text-lg font-bold text-cyan-300">🚚 Levantar Pedido para la Ruta</h3>
+          <button
+            type="button"
+            disabled={creatingOrder}
+            onclick={() => showNewOrderModal = false}
+            class="text-slate-400 hover:text-white disabled:opacity-50 font-bold text-lg cursor-pointer"
+          >✕</button>
+        </div>
+
+        <form onsubmit={handleCreateOrder} class="space-y-4 text-sm">
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">Seleccionar Cliente (sin pedido activo)</label>
+            <select
+              bind:value={selectedOrderClientId}
+              onchange={handleSelectOrderClientChange}
+              required
+              disabled={creatingOrder || availableClientsForOrder.length === 0}
+              class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none"
+            >
+              <option value="" disabled>
+                {availableClientsForOrder.length === 0
+                  ? '-- Todos los clientes ya tienen pedido en ruta --'
+                  : '-- Elige un cliente --'}
+              </option>
+              {#each availableClientsForOrder as client}
+                <option value={client.id}>
+                  {client.name} ({client.address || 'Sin dirección'})
+                </option>
+              {/each}
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">Cantidad de Garrafones para este Pedido</label>
+            <input
+              type="number"
+              min="1"
+              bind:value={customOrderGarafones}
+              required
+              disabled={creatingOrder || availableClientsForOrder.length === 0}
+              class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-cyan-400 focus:outline-none"
+            />
+          </div>
+
+          <div class="flex justify-end gap-3 pt-4 border-t border-slate-800">
+            <button
+              type="button"
+              disabled={creatingOrder}
+              onclick={() => showNewOrderModal = false}
+              class="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 rounded-lg font-medium cursor-pointer"
+            >Cancelar</button>
+            <button
+              type="submit"
+              disabled={creatingOrder || availableClientsForOrder.length === 0}
+              class="px-5 py-2 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-bold rounded-lg shadow-md cursor-pointer"
+            >{creatingOrder ? 'Añadiendo...' : 'Mandar a la Ruta'}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  {/if}
 
   <!-- Modal para Nuevo Cliente -->
   {#if showModal}
