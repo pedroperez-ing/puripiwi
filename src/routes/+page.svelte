@@ -341,10 +341,9 @@
   // Filtro exclusivo por nombre y dirección (ignora teléfono y otros campos)
   let normalizedQuery = $derived(normalizeText(searchQuery));
   let isSearching = $derived(normalizedQuery.length > 0);
-  let isDirectoryOpen = $derived(showDirectory || isSearching);
 
   let filteredClients = $derived.by(() => {
-    if (!normalizedQuery) return clients;
+    if (!normalizedQuery) return [];
     return clients.filter(c => {
       const nameMatch = normalizeText(c.name).includes(normalizedQuery);
       const addressMatch = normalizeText(c.address).includes(normalizedQuery);
@@ -380,8 +379,8 @@
     </div>
   </div>
 
-  <!-- Buscador Rápido (solo Nombre y Dirección) -->
-  <div class="bg-slate-800/60 border border-slate-700 rounded-xl p-3.5 space-y-2">
+  <!-- Buscador Rápido + Resultados Inmediatos (arriba de Clientes Sugeridos) -->
+  <div class="bg-slate-800/60 border border-slate-700 rounded-xl p-4 space-y-3">
     <div class="relative flex items-center">
       <span class="absolute left-3 text-slate-400 text-sm pointer-events-none">🔍</span>
       <input
@@ -401,10 +400,112 @@
         </button>
       {/if}
     </div>
+
     {#if isSearching}
-      <p class="text-[11px] text-cyan-300/90 px-1">
-        Coincidencias encontradas (nombre o dirección): <strong>{filteredClients.length}</strong> de {clients.length}
-      </p>
+      <div class="flex items-center justify-between gap-2 px-1">
+        <p class="text-xs text-cyan-300 font-semibold">
+          Resultados de Búsqueda ({filteredClients.length} de {clients.length})
+        </p>
+        <button
+          type="button"
+          onclick={() => (searchQuery = '')}
+          class="text-[11px] text-slate-400 hover:text-slate-200 underline cursor-pointer"
+        >
+          Cerrar resultados
+        </button>
+      </div>
+
+      {#if loading}
+        <div class="text-center py-6 text-slate-400 animate-pulse text-sm">Buscando clientes...</div>
+      {:else if filteredClients.length === 0}
+        <div class="text-center py-6 bg-slate-900/50 rounded-xl border border-slate-800">
+          <p class="text-slate-400 text-sm">
+            No se encontraron clientes con "{searchQuery}" en nombre o dirección.
+          </p>
+        </div>
+      {:else}
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+          {#each filteredClients as client}
+            {@const status = getDeliveryStatus(client)}
+            {@const lastDelivery = getEffectiveLastDelivery(client)}
+            {@const freq = getEffectiveFrequency(client)}
+            {@const alreadyInRoute = pendingClientIds.has(client.id)}
+            <div class="bg-slate-900/90 border border-cyan-500/40 rounded-xl p-4 space-y-3 shadow-md min-w-0">
+              <div class="flex justify-between items-start gap-2">
+                <div class="min-w-0">
+                  <h3 class="font-bold text-base text-slate-100 break-words">{client.name}</h3>
+                  <p class="text-xs text-cyan-400">📞 {client.phone || 'Sin teléfono'}</p>
+                </div>
+                <div class="text-right flex flex-col items-end gap-1.5 shrink-0">
+                  <span class="text-xs bg-slate-950 px-2.5 py-1 rounded-md border border-slate-700 text-slate-300 font-semibold">
+                    {Number(client.defaultGarafones) || 2} Garrafón(es)
+                  </span>
+                  <div class="flex items-center gap-1.5">
+                    {#if alreadyInRoute}
+                      <span class="text-[11px] bg-cyan-950/80 text-cyan-300 border border-cyan-700/60 px-2 py-1 rounded-md font-bold">
+                        ✅ En ruta
+                      </span>
+                    {:else}
+                      <button
+                        type="button"
+                        onclick={() => openQuickOrderModal(client)}
+                        disabled={creatingOrder}
+                        class="bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 text-[11px] font-bold px-2.5 py-1 rounded-md transition-colors cursor-pointer"
+                      >
+                        🚚 Pedido
+                      </button>
+                    {/if}
+                    {#if client.phone}
+                      <button
+                        type="button"
+                        onclick={() => openWhatsApp(client)}
+                        class="bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold px-2.5 py-1 rounded-md transition-colors cursor-pointer"
+                      >
+                        💬
+                      </button>
+                    {/if}
+                  </div>
+                </div>
+              </div>
+
+              <div class="flex items-center justify-between gap-2 text-xs px-3 py-2 rounded-lg border {status.class}">
+                <span>Estado de consumo:</span>
+                <strong class="font-bold text-right">{status.text}</strong>
+              </div>
+
+              <div class="text-xs text-slate-300 space-y-1 bg-slate-950/60 p-2.5 rounded-lg border border-slate-800 break-words">
+                <p><strong class="text-slate-400">Dirección:</strong> {client.address || 'No especificada'}</p>
+                {#if client.mapLink}
+                  <p>
+                    <a href={client.mapLink} target="_blank" rel="noopener noreferrer" class="text-cyan-400 hover:underline inline-flex items-center gap-1 font-medium mt-1">
+                      🗺️ Abrir ubicación en Google Maps
+                    </a>
+                  </p>
+                {/if}
+              </div>
+
+              <div class="grid grid-cols-2 gap-2 text-xs pt-1">
+                <div class="bg-slate-950/80 p-2 rounded border border-slate-800 text-center">
+                  <span class="text-slate-400 block">Envases Prestados</span>
+                  <strong class="text-cyan-300 text-sm">{Number(client.prestados) || 0}</strong>
+                </div>
+                <div class="bg-slate-950/80 p-2 rounded border border-slate-800 text-center">
+                  <span class="text-slate-400 block">Envases Rotos</span>
+                  <strong class="text-amber-400 text-sm">{Number(client.rotos) || 0}</strong>
+                  <span class="text-[10px] block text-slate-500">
+                    {(Number(client.rotos) || 0) > 2 ? '⚠️ Asignar garrafón desgastado' : '✨ Garrafón en buen estado'}
+                  </span>
+                </div>
+              </div>
+
+              <div class="text-[11px] text-slate-400 pt-1 flex justify-between items-center gap-2 border-t border-slate-800">
+                <span>Última entrega: <strong class="text-slate-200">{lastDelivery || 'Ninguna'}</strong></span>
+                <span>Frecuencia: <strong class="text-slate-200">{freq} días</strong></span>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
     {/if}
   </div>
 
@@ -472,44 +573,34 @@
     {/if}
   </div>
 
-  <!-- Listado General de Clientes (Contraído por defecto; se abre al buscar o con el botón) -->
+  <!-- Listado General de Clientes (Contraído por defecto) -->
   <div class="bg-slate-800/40 border border-slate-700/80 rounded-xl p-4 space-y-3">
     <button
       type="button"
-      onclick={() => {
-        if (!isSearching) showDirectory = !showDirectory;
-      }}
+      onclick={() => (showDirectory = !showDirectory)}
       class="w-full flex items-center justify-between gap-2 text-left cursor-pointer"
     >
       <div class="flex items-center gap-2 min-w-0">
         <h3 class="font-bold text-slate-200 text-sm">
-          {isSearching
-            ? `Resultados de Búsqueda (${filteredClients.length})`
-            : `Directorio General de Clientes (${clients.length})`}
+          Directorio General de Clientes ({clients.length})
         </h3>
       </div>
 
-      {#if !isSearching}
-        <span class="shrink-0 text-xs bg-slate-900 hover:bg-slate-950 text-cyan-300 border border-slate-700 px-3 py-1.5 rounded-lg font-semibold">
-          {isDirectoryOpen ? '▲ Ocultar' : '▼ Mostrar'}
-        </span>
-      {/if}
+      <span class="shrink-0 text-xs bg-slate-900 hover:bg-slate-950 text-cyan-300 border border-slate-700 px-3 py-1.5 rounded-lg font-semibold">
+        {showDirectory ? '▲ Ocultar' : '▼ Mostrar'}
+      </span>
     </button>
 
-    {#if isDirectoryOpen}
+    {#if showDirectory}
       {#if loading}
         <div class="text-center py-8 text-slate-400 animate-pulse text-sm">Cargando base de datos de clientes...</div>
-      {:else if filteredClients.length === 0}
+      {:else if clients.length === 0}
         <div class="text-center py-8 bg-slate-900/40 rounded-xl border border-slate-800">
-          <p class="text-slate-400 text-sm">
-            {isSearching
-              ? `No se encontraron clientes con "${searchQuery}" en nombre o dirección.`
-              : 'No hay clientes registrados todavía.'}
-          </p>
+          <p class="text-slate-400 text-sm">No hay clientes registrados todavía.</p>
         </div>
       {:else}
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
-          {#each filteredClients as client}
+          {#each clients as client}
             {@const status = getDeliveryStatus(client)}
             {@const lastDelivery = getEffectiveLastDelivery(client)}
             {@const freq = getEffectiveFrequency(client)}
