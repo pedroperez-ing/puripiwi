@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { db } from '$lib/firebase';
-  import { doc, setDoc, getDoc } from 'firebase/firestore';
+  import { collection, doc, setDoc, getDoc, getDocs } from 'firebase/firestore';
+  import HeatmapClientes from '$lib/components/HeatmapClientes.svelte';
   import type {
     AccountingReportDoc,
     CostConfig,
@@ -15,6 +16,17 @@
     construirInformeMensual
   } from '$lib/utils/contabilidad';
 
+  interface ClientLocationItem {
+    id: string;
+    name: string;
+    address?: string;
+    mapLink?: string;
+    lat?: number | null;
+    lng?: number | null;
+    defaultGarafones?: number;
+    frecuenciaDias?: number;
+  }
+
   let maint = $state<MaintenanceState>({ ...DEFAULT_MAINTENANCE_STATE });
   let prevMaintDates = $state({
     lastFiltros: '',
@@ -24,6 +36,12 @@
   let costConfig = $state<CostConfig>({ ...DEFAULT_COST_CONFIG });
   let showCostEditor = $state(false);
   let savingCosts = $state(false);
+
+  // Estado bajo demanda para el Mapa de Calor
+  let showHeatmap = $state(false);
+  let loadingHeatmapClients = $state(false);
+  let heatmapClients = $state<ClientLocationItem[]>([]);
+  let heatmapLoadedOnce = $state(false);
 
   let rawSales = $state<SalesCounters>({
     semanaActual: 0,
@@ -149,6 +167,31 @@
       console.error('Error al cargar datos de mantenimiento y contabilidad:', error);
     } finally {
       loading = false;
+    }
+  }
+
+  async function toggleHeatmap(forceReload = false) {
+    if (showHeatmap && !forceReload) {
+      showHeatmap = false;
+      return;
+    }
+
+    showHeatmap = true;
+    if (heatmapLoadedOnce && !forceReload) return;
+
+    try {
+      loadingHeatmapClients = true;
+      const snap = await getDocs(collection(db, 'clients'));
+      heatmapClients = snap.docs.map(d => ({
+        id: d.id,
+        ...d.data()
+      })) as ClientLocationItem[];
+      heatmapLoadedOnce = true;
+    } catch (error) {
+      console.error('Error al cargar ubicaciones de clientes para mapa de calor:', error);
+      alert('No se pudieron cargar las ubicaciones de los clientes.');
+    } finally {
+      loadingHeatmapClients = false;
     }
   }
 
@@ -286,40 +329,49 @@
     let weekTotal = 0;
     let weekPrev = 0;
     let kmWeek = 0;
+    let kmWeekPrev = 0;
     if (rawSales.weekKey === curWeek) {
       weekTotal = Number(rawSales.semanaActual) || 0;
       weekPrev = Number(rawSales.semanaAnterior) || 0;
       kmWeek = Number(rawSales.kmSemanaActual) || 0;
+      kmWeekPrev = Number(rawSales.kmSemanaAnterior) || 0;
     } else if (rawSales.weekKey === prevWeek) {
       weekTotal = 0;
       weekPrev = Number(rawSales.semanaActual) || 0;
       kmWeek = 0;
+      kmWeekPrev = Number(rawSales.kmSemanaActual) || 0;
     }
 
     let monthTotal = 0;
     let monthPrev = 0;
     let kmMonth = 0;
+    let kmMonthPrev = 0;
     if (rawSales.monthKey === curMonth) {
       monthTotal = Number(rawSales.mesActual) || 0;
       monthPrev = Number(rawSales.mesAnterior) || 0;
       kmMonth = Number(rawSales.kmMesActual) || 0;
+      kmMonthPrev = Number(rawSales.kmMesAnterior) || 0;
     } else if (rawSales.monthKey === prevMonth) {
       monthTotal = 0;
       monthPrev = Number(rawSales.mesActual) || 0;
       kmMonth = 0;
+      kmMonthPrev = Number(rawSales.kmMesActual) || 0;
     }
 
     let yearTotal = 0;
     let yearPrev = 0;
     let kmYear = 0;
+    let kmYearPrev = 0;
     if (rawSales.yearKey === curYear) {
       yearTotal = Number(rawSales.anioActual) || 0;
       yearPrev = Number(rawSales.anioAnterior) || 0;
       kmYear = Number(rawSales.kmAnioActual) || 0;
+      kmYearPrev = Number(rawSales.kmAnioAnterior) || 0;
     } else if (rawSales.yearKey === prevYear) {
       yearTotal = 0;
       yearPrev = Number(rawSales.anioActual) || 0;
       kmYear = 0;
+      kmYearPrev = Number(rawSales.kmAnioActual) || 0;
     }
 
     return {
@@ -330,8 +382,112 @@
       yearTotal,
       yearPrev,
       kmWeek,
+      kmWeekPrev,
       kmMonth,
-      kmYear
+      kmMonthPrev,
+      kmYear,
+      kmYearPrev
+    };
+  });
+
+  // Resumen financiero claro: Ventas - Gastos = Ganancia (Semana, Mes, Año + periodo anterior)
+  let moneySummary = $derived.by(() => {
+    const now = new Date();
+    const curMonthKey = getMonthKey(now);
+    const prevMonthKey = getPrevMonthKey(now);
+    const curYearKey = getYearKey(now);
+    const prevYearKey = getPrevYearKey(now);
+
+    const price = Number(costConfig.precioGarrafon) || 21;
+    const directPerUnit =
+      (Number(costConfig.costoTapa) || 0) +
+      (Number(costConfig.costoSello) || 0) +
+      (Number(costConfig.costoJabonCloro) || 0);
+    const kmPerLiter = Math.max(1, Number(costConfig.rendimientoKmPorLitro) || 15);
+    const gasPrice = Number(costConfig.precioGasolinaLitro) || 0;
+    const gasPerKm = gasPrice / kmPerLiter;
+
+    // Semana actual y semana anterior (ventas directas + gasolina de ruta)
+    const weekSales = stats.weekTotal * price;
+    const weekExpenses = stats.weekTotal * directPerUnit + stats.kmWeek * gasPerKm;
+    const weekProfit = weekSales - weekExpenses;
+
+    const weekPrevSales = stats.weekPrev * price;
+    const weekPrevExpenses = stats.weekPrev * directPerUnit + stats.kmWeekPrev * gasPerKm;
+    const weekPrevProfit = weekPrevSales - weekPrevExpenses;
+
+    // Mes actual y mes anterior (toma informe mensual si existe; si no, calcula con ventas/km)
+    const curMonthData = reportDoc.months?.[curMonthKey]
+      ? construirInformeMensual(curMonthKey, reportDoc.months[curMonthKey], costConfig)
+      : null;
+
+    const monthSales =
+      curMonthData && curMonthData.garrafonesVendidos > 0
+        ? curMonthData.ingresosEstimados
+        : stats.monthTotal * price;
+    const monthExpenses =
+      curMonthData && curMonthData.garrafonesVendidos > 0
+        ? curMonthData.costoTotal
+        : stats.monthTotal * directPerUnit + stats.kmMonth * gasPerKm;
+    const monthProfit = monthSales - monthExpenses;
+
+    const prevMonthData = reportDoc.months?.[prevMonthKey]
+      ? construirInformeMensual(prevMonthKey, reportDoc.months[prevMonthKey], costConfig)
+      : null;
+
+    const monthPrevSales =
+      prevMonthData && prevMonthData.garrafonesVendidos > 0
+        ? prevMonthData.ingresosEstimados
+        : stats.monthPrev * price;
+    const monthPrevExpenses =
+      prevMonthData && prevMonthData.garrafonesVendidos > 0
+        ? prevMonthData.costoTotal
+        : stats.monthPrev * directPerUnit + stats.kmMonthPrev * gasPerKm;
+    const monthPrevProfit = monthPrevSales - monthPrevExpenses;
+
+    // Año actual y año anterior
+    const sumYearFromReports = (yr: string) => {
+      const entries = Object.entries(reportDoc.months || {})
+        .filter(([k]) => k.startsWith(`${yr}-`))
+        .map(([k, v]) => construirInformeMensual(k, v, costConfig));
+      const gar = entries.reduce((a, e) => a + e.garrafonesVendidos, 0);
+      return {
+        gar,
+        sales: entries.reduce((a, e) => a + e.ingresosEstimados, 0),
+        expenses: entries.reduce((a, e) => a + e.costoTotal, 0),
+        profit: entries.reduce((a, e) => a + e.utilidadNeta, 0)
+      };
+    };
+
+    const curYrRep = sumYearFromReports(curYearKey);
+    const yearSales = curYrRep.gar > 0 ? curYrRep.sales : stats.yearTotal * price;
+    const yearExpenses =
+      curYrRep.gar > 0
+        ? curYrRep.expenses
+        : stats.yearTotal * directPerUnit + stats.kmYear * gasPerKm;
+    const yearProfit = yearSales - yearExpenses;
+
+    const prevYrRep = sumYearFromReports(prevYearKey);
+    const yearPrevSales = prevYrRep.gar > 0 ? prevYrRep.sales : stats.yearPrev * price;
+    const yearPrevExpenses =
+      prevYrRep.gar > 0
+        ? prevYrRep.expenses
+        : stats.yearPrev * directPerUnit + stats.kmYearPrev * gasPerKm;
+    const yearPrevProfit = yearPrevSales - yearPrevExpenses;
+
+    return {
+      weekSales,
+      weekExpenses,
+      weekProfit,
+      weekPrevProfit,
+      monthSales,
+      monthExpenses,
+      monthProfit,
+      monthPrevProfit,
+      yearSales,
+      yearExpenses,
+      yearProfit,
+      yearPrevProfit
     };
   });
 
@@ -557,7 +713,7 @@
   {#if loading}
     <div class="text-center py-12 text-slate-400 animate-pulse">Cargando registros...</div>
   {:else}
-    <!-- SECCIÓN 1: CONTABILIDAD DE VENTAS -->
+    <!-- SECCIÓN 1: CONTABILIDAD DE VENTAS (VOLUMEN) -->
     <div class="space-y-3">
       <h3 class="font-bold text-slate-200 text-sm text-center sm:text-left">📊 Balance de Garrafones Vendidos</h3>
       
@@ -591,6 +747,58 @@
       </div>
     </div>
 
+    <!-- SECCIÓN 1B: RESUMEN DE DINERO (VENTAS - GASTOS = GANANCIA) -->
+    <div class="space-y-3">
+      <div class="flex flex-wrap items-center justify-between gap-2 text-center sm:text-left">
+        <h3 class="font-bold text-slate-200 text-sm">💰 Resumen Financiero (Ventas − Gastos = Ganancia)</h3>
+        <span class="text-[11px] text-slate-400">Descuenta insumos directos, gasolina y mantenimientos registrados</span>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <!-- Semana -->
+        <div class="bg-slate-800/80 border border-emerald-800/40 p-4 rounded-xl text-center space-y-1.5 shadow-md min-w-0">
+          <span class="text-xs text-slate-400 uppercase font-semibold">Ganancia Semana</span>
+          <div class="text-2xl sm:text-3xl font-black {moneySummary.weekProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}">
+            {formatMoney(moneySummary.weekProfit)}
+          </div>
+          <p class="text-[11px] text-slate-300">
+            Ventas <strong class="text-cyan-300">{formatMoney(moneySummary.weekSales)}</strong> − Gastos <strong class="text-amber-300">{formatMoney(moneySummary.weekExpenses)}</strong>
+          </p>
+          <div class="pt-1 border-t border-slate-700/70 text-[11px] text-slate-400">
+            Semana anterior: <strong class="text-slate-200">{formatMoney(moneySummary.weekPrevProfit)}</strong>
+          </div>
+        </div>
+
+        <!-- Mes -->
+        <div class="bg-slate-800/80 border border-emerald-700/60 p-4 rounded-xl text-center space-y-1.5 shadow-md min-w-0">
+          <span class="text-xs text-slate-400 uppercase font-semibold">Ganancia Mes</span>
+          <div class="text-2xl sm:text-3xl font-black {moneySummary.monthProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}">
+            {formatMoney(moneySummary.monthProfit)}
+          </div>
+          <p class="text-[11px] text-slate-300">
+            Ventas <strong class="text-cyan-300">{formatMoney(moneySummary.monthSales)}</strong> − Gastos <strong class="text-amber-300">{formatMoney(moneySummary.monthExpenses)}</strong>
+          </p>
+          <div class="pt-1 border-t border-slate-700/70 text-[11px] text-slate-400">
+            Mes anterior: <strong class="text-slate-200">{formatMoney(moneySummary.monthPrevProfit)}</strong>
+          </div>
+        </div>
+
+        <!-- Año -->
+        <div class="bg-slate-800/80 border border-emerald-800/40 p-4 rounded-xl text-center space-y-1.5 shadow-md min-w-0">
+          <span class="text-xs text-slate-400 uppercase font-semibold">Ganancia Año</span>
+          <div class="text-2xl sm:text-3xl font-black {moneySummary.yearProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}">
+            {formatMoney(moneySummary.yearProfit)}
+          </div>
+          <p class="text-[11px] text-slate-300">
+            Ventas <strong class="text-cyan-300">{formatMoney(moneySummary.yearSales)}</strong> − Gastos <strong class="text-amber-300">{formatMoney(moneySummary.yearExpenses)}</strong>
+          </p>
+          <div class="pt-1 border-t border-slate-700/70 text-[11px] text-slate-400">
+            Año anterior: <strong class="text-slate-200">{formatMoney(moneySummary.yearPrevProfit)}</strong>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- SECCIÓN 2: COSTO REAL POR GARRAFÓN Y RENTABILIDAD -->
     <div class="bg-slate-800/70 border border-cyan-800/40 rounded-xl p-5 space-y-4">
       <div class="flex flex-col sm:flex-row justify-between items-center gap-2 text-center sm:text-left">
@@ -607,7 +815,7 @@
         </div>
         <div class="bg-slate-900/90 border border-slate-700 p-3 rounded-lg">
           <span class="text-slate-400 block">Utilidad Neta / Garrafón</span>
-          <strong class="text-emerald-400 text-lg font-black">{formatMoney(unitCosts.utilidadUnitaria)}</strong>
+          <strong class="{unitCosts.utilidadUnitaria >= 0 ? 'text-emerald-400' : 'text-rose-400'} text-lg font-black">{formatMoney(unitCosts.utilidadUnitaria)}</strong>
         </div>
         <div class="bg-slate-900/90 border border-slate-700 p-3 rounded-lg">
           <span class="text-slate-400 block">Tapa + Sello + Jabón</span>
@@ -756,6 +964,47 @@
             </strong>
           </div>
         </div>
+      {/if}
+    </div>
+
+    <!-- SECCIÓN 5: MAPA DE CALOR BAJO DEMANDA -->
+    <div class="bg-slate-800/60 border border-slate-700 rounded-xl p-5 space-y-4">
+      <div class="flex flex-col sm:flex-row justify-between items-center gap-3 text-center sm:text-left">
+        <div>
+          <h3 class="font-bold text-cyan-300 text-base">🗺️ Mapa de Calor de Clientes y Demanda</h3>
+          <p class="text-xs text-slate-400">Visualiza bajo demanda en qué zonas se concentran tus clientes y garrafones habituales.</p>
+        </div>
+
+        <div class="flex items-center gap-2 w-full sm:w-auto justify-center">
+          {#if showHeatmap}
+            <button
+              type="button"
+              onclick={() => toggleHeatmap(true)}
+              disabled={loadingHeatmapClients}
+              class="bg-slate-900 hover:bg-slate-950 text-cyan-300 border border-slate-700 font-semibold px-3 py-2 rounded-lg text-xs transition-colors cursor-pointer disabled:opacity-50"
+            >
+              🔄 Actualizar
+            </button>
+          {/if}
+          <button
+            type="button"
+            onclick={() => toggleHeatmap(false)}
+            disabled={loadingHeatmapClients}
+            class="w-full sm:w-auto bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 font-bold px-4 py-2.5 rounded-lg text-xs transition-colors shadow cursor-pointer"
+          >
+            {showHeatmap ? '▲ Ocultar Mapa' : '🔥 Generar Mapa de Calor'}
+          </button>
+        </div>
+      </div>
+
+      {#if showHeatmap}
+        {#if loadingHeatmapClients}
+          <div class="text-center py-8 text-slate-400 animate-pulse text-xs">
+            Cargando ubicaciones de clientes...
+          </div>
+        {:else}
+          <HeatmapClientes clients={heatmapClients} />
+        {/if}
       {/if}
     </div>
   {/if}
