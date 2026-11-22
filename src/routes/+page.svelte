@@ -45,6 +45,10 @@
   let showModal = $state(false);
   let savingClient = $state(false);
 
+  // Buscador y visibilidad del directorio general (contraído por defecto)
+  let searchQuery = $state('');
+  let showDirectory = $state(false);
+
   // Estados para levantar pedido desde Mostrador o Sugeridos
   let showNewOrderModal = $state(false);
   let selectedOrderClientId = $state('');
@@ -63,6 +67,14 @@
     frecuenciaDias: 4,
     lastDelivery: ''
   });
+
+  function normalizeText(text: string): string {
+    return (text || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim();
+  }
 
   function getEffectiveLastDelivery(client: Client): string {
     if (client.lastDelivery) return client.lastDelivery;
@@ -325,6 +337,20 @@
         return scoreA - scoreB;
       })
   );
+
+  // Filtro exclusivo por nombre y dirección (ignora teléfono y otros campos)
+  let normalizedQuery = $derived(normalizeText(searchQuery));
+  let isSearching = $derived(normalizedQuery.length > 0);
+  let isDirectoryOpen = $derived(showDirectory || isSearching);
+
+  let filteredClients = $derived.by(() => {
+    if (!normalizedQuery) return clients;
+    return clients.filter(c => {
+      const nameMatch = normalizeText(c.name).includes(normalizedQuery);
+      const addressMatch = normalizeText(c.address).includes(normalizedQuery);
+      return nameMatch || addressMatch;
+    });
+  });
 </script>
 
 <div class="space-y-6">
@@ -352,6 +378,34 @@
         ➕ Nuevo Cliente
       </button>
     </div>
+  </div>
+
+  <!-- Buscador Rápido (solo Nombre y Dirección) -->
+  <div class="bg-slate-800/60 border border-slate-700 rounded-xl p-3.5 space-y-2">
+    <div class="relative flex items-center">
+      <span class="absolute left-3 text-slate-400 text-sm pointer-events-none">🔍</span>
+      <input
+        type="text"
+        bind:value={searchQuery}
+        placeholder="Buscar cliente por nombre o dirección..."
+        class="w-full bg-slate-950 border border-slate-700 rounded-lg pl-9 pr-9 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:border-cyan-400 focus:outline-none"
+      />
+      {#if searchQuery}
+        <button
+          type="button"
+          onclick={() => (searchQuery = '')}
+          title="Limpiar búsqueda"
+          class="absolute right-2.5 text-slate-400 hover:text-white text-xs font-bold px-1.5 py-0.5 rounded bg-slate-800 cursor-pointer"
+        >
+          ✕
+        </button>
+      {/if}
+    </div>
+    {#if isSearching}
+      <p class="text-[11px] text-cyan-300/90 px-1">
+        Coincidencias encontradas (nombre o dirección): <strong>{filteredClients.length}</strong> de {clients.length}
+      </p>
+    {/if}
   </div>
 
   <!-- Sección de Alertas Inteligentes -->
@@ -418,74 +472,100 @@
     {/if}
   </div>
 
-  <!-- Listado General de Clientes -->
-  <div class="space-y-3">
-    <h3 class="font-bold text-slate-200 text-sm">Directorio General de Clientes ({clients.length})</h3>
-    
-    {#if loading}
-      <div class="text-center py-12 text-slate-400 animate-pulse">Cargando base de datos de clientes...</div>
-    {:else if clients.length === 0}
-      <div class="text-center py-12 bg-slate-800/30 rounded-xl border border-slate-800">
-        <p class="text-slate-400 text-sm">No hay clientes registrados todavía.</p>
+  <!-- Listado General de Clientes (Contraído por defecto; se abre al buscar o con el botón) -->
+  <div class="bg-slate-800/40 border border-slate-700/80 rounded-xl p-4 space-y-3">
+    <button
+      type="button"
+      onclick={() => {
+        if (!isSearching) showDirectory = !showDirectory;
+      }}
+      class="w-full flex items-center justify-between gap-2 text-left cursor-pointer"
+    >
+      <div class="flex items-center gap-2 min-w-0">
+        <h3 class="font-bold text-slate-200 text-sm">
+          {isSearching
+            ? `Resultados de Búsqueda (${filteredClients.length})`
+            : `Directorio General de Clientes (${clients.length})`}
+        </h3>
       </div>
-    {:else}
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {#each clients as client}
-          {@const status = getDeliveryStatus(client)}
-          {@const lastDelivery = getEffectiveLastDelivery(client)}
-          {@const freq = getEffectiveFrequency(client)}
-          <div class="bg-slate-800/80 border border-slate-700/80 rounded-xl p-4 space-y-3 shadow-md hover:border-cyan-500/50 transition-all min-w-0">
-            <div class="flex justify-between items-start gap-2">
-              <div class="min-w-0">
-                <h3 class="font-bold text-base text-slate-100 break-words">{client.name}</h3>
-                <p class="text-xs text-cyan-400">📞 {client.phone || 'Sin teléfono'}</p>
-              </div>
-              <div class="text-right flex flex-col items-end gap-1 shrink-0">
-                <span class="text-xs bg-slate-900 px-2.5 py-1 rounded-md border border-slate-700 text-slate-300 font-semibold">
-                  {Number(client.defaultGarafones) || 2} Garrafón(es)
-                </span>
-              </div>
-            </div>
 
-            <!-- Indicador Dinámico de Días Restantes -->
-            <div class="flex items-center justify-between gap-2 text-xs px-3 py-2 rounded-lg border {status.class}">
-              <span>Estado de consumo:</span>
-              <strong class="font-bold text-right">{status.text}</strong>
-            </div>
+      {#if !isSearching}
+        <span class="shrink-0 text-xs bg-slate-900 hover:bg-slate-950 text-cyan-300 border border-slate-700 px-3 py-1.5 rounded-lg font-semibold">
+          {isDirectoryOpen ? '▲ Ocultar' : '▼ Mostrar'}
+        </span>
+      {/if}
+    </button>
 
-            <div class="text-xs text-slate-300 space-y-1 bg-slate-900/50 p-2.5 rounded-lg border border-slate-800 break-words">
-              <p><strong class="text-slate-400">Dirección:</strong> {client.address || 'No especificada'}</p>
-              {#if client.mapLink}
-                <p>
-                  <a href={client.mapLink} target="_blank" rel="noopener noreferrer" class="text-cyan-400 hover:underline inline-flex items-center gap-1 font-medium mt-1">
-                    🗺️ Abrir ubicación en Google Maps
-                  </a>
-                </p>
-              {/if}
-            </div>
-
-            <!-- Control de Envases y Estado -->
-            <div class="grid grid-cols-2 gap-2 text-xs pt-1">
-              <div class="bg-slate-900/80 p-2 rounded border border-slate-800 text-center">
-                <span class="text-slate-400 block">Envases Prestados</span>
-                <strong class="text-cyan-300 text-sm">{Number(client.prestados) || 0}</strong>
+    {#if isDirectoryOpen}
+      {#if loading}
+        <div class="text-center py-8 text-slate-400 animate-pulse text-sm">Cargando base de datos de clientes...</div>
+      {:else if filteredClients.length === 0}
+        <div class="text-center py-8 bg-slate-900/40 rounded-xl border border-slate-800">
+          <p class="text-slate-400 text-sm">
+            {isSearching
+              ? `No se encontraron clientes con "${searchQuery}" en nombre o dirección.`
+              : 'No hay clientes registrados todavía.'}
+          </p>
+        </div>
+      {:else}
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+          {#each filteredClients as client}
+            {@const status = getDeliveryStatus(client)}
+            {@const lastDelivery = getEffectiveLastDelivery(client)}
+            {@const freq = getEffectiveFrequency(client)}
+            <div class="bg-slate-800/80 border border-slate-700/80 rounded-xl p-4 space-y-3 shadow-md hover:border-cyan-500/50 transition-all min-w-0">
+              <div class="flex justify-between items-start gap-2">
+                <div class="min-w-0">
+                  <h3 class="font-bold text-base text-slate-100 break-words">{client.name}</h3>
+                  <p class="text-xs text-cyan-400">📞 {client.phone || 'Sin teléfono'}</p>
+                </div>
+                <div class="text-right flex flex-col items-end gap-1 shrink-0">
+                  <span class="text-xs bg-slate-900 px-2.5 py-1 rounded-md border border-slate-700 text-slate-300 font-semibold">
+                    {Number(client.defaultGarafones) || 2} Garrafón(es)
+                  </span>
+                </div>
               </div>
-              <div class="bg-slate-900/80 p-2 rounded border border-slate-800 text-center">
-                <span class="text-slate-400 block">Envases Rotos</span>
-                <strong class="text-amber-400 text-sm">{Number(client.rotos) || 0}</strong>
-                <span class="text-[10px] block text-slate-500">
-                  {(Number(client.rotos) || 0) > 2 ? '⚠️ Asignar garrafón desgastado' : '✨ Garrafón en buen estado'}
-                </span>
+
+              <!-- Indicador Dinámico de Días Restantes -->
+              <div class="flex items-center justify-between gap-2 text-xs px-3 py-2 rounded-lg border {status.class}">
+                <span>Estado de consumo:</span>
+                <strong class="font-bold text-right">{status.text}</strong>
+              </div>
+
+              <div class="text-xs text-slate-300 space-y-1 bg-slate-900/50 p-2.5 rounded-lg border border-slate-800 break-words">
+                <p><strong class="text-slate-400">Dirección:</strong> {client.address || 'No especificada'}</p>
+                {#if client.mapLink}
+                  <p>
+                    <a href={client.mapLink} target="_blank" rel="noopener noreferrer" class="text-cyan-400 hover:underline inline-flex items-center gap-1 font-medium mt-1">
+                      🗺️ Abrir ubicación en Google Maps
+                    </a>
+                  </p>
+                {/if}
+              </div>
+
+              <!-- Control de Envases y Estado -->
+              <div class="grid grid-cols-2 gap-2 text-xs pt-1">
+                <div class="bg-slate-900/80 p-2 rounded border border-slate-800 text-center">
+                  <span class="text-slate-400 block">Envases Prestados</span>
+                  <strong class="text-cyan-300 text-sm">{Number(client.prestados) || 0}</strong>
+                </div>
+                <div class="bg-slate-900/80 p-2 rounded border border-slate-800 text-center">
+                  <span class="text-slate-400 block">Envases Rotos</span>
+                  <strong class="text-amber-400 text-sm">{Number(client.rotos) || 0}</strong>
+                  <span class="text-[10px] block text-slate-500">
+                    {(Number(client.rotos) || 0) > 2 ? '⚠️ Asignar garrafón desgastado' : '✨ Garrafón en buen estado'}
+                  </span>
+                </div>
+              </div>
+
+              <div class="text-[11px] text-slate-400 pt-1 flex justify-between items-center gap-2 border-t border-slate-700/50">
+                <span>Última entrega: <strong class="text-slate-200">{lastDelivery || 'Ninguna'}</strong></span>
+                <span>Frecuencia: <strong class="text-slate-200">{freq} días</strong></span>
               </div>
             </div>
-
-            <div class="text-[11px] text-slate-400 pt-1 flex justify-between items-center gap-2 border-t border-slate-700/50">
-              <span>Última entrega: <strong class="text-slate-200">{lastDelivery || 'Ninguna'}</strong></span>
-              <span>Frecuencia: <strong class="text-slate-200">{freq} días</strong></span>
-            </div>
-          </div>
-        {/each}
-      </div>
+          {/each}
+        </div>
+      {/if}
     {/if}
   </div>
 
